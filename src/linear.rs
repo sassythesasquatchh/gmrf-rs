@@ -1,9 +1,8 @@
 //! Linear operator abstractions mirroring the Julia `LinearMaps` usage.
 //!
 //! These traits allow the core crate to work with both explicit sparse matrices and
-//! matrix-free operators. They are intentionally lightweight so they can back
-//! precision operators, preconditioners, and composed transforms without forcing
-//! a particular backend.
+//! matrix-free operators. Their backend-agnostic interface supports precision
+//! operators, preconditioners, and composed transforms.
 
 use crate::types::{CooMatrix, DenseMatrix, GmrfError, Permutation, SparseMatrix, Vector};
 
@@ -70,9 +69,8 @@ impl<A: LinearOperator, B: LinearOperator> LinearOperator for ComposedOperator<A
 
 /// Sparse row-wise operator for rectangular transforms `y = A x`.
 ///
-/// This is intentionally lightweight and backend-agnostic. It is primarily used for
-/// transformed variance calculations where each output row is a sparse linear functional
-/// over the latent state.
+/// Each output row is a sparse linear functional over the latent state. The
+/// backend-agnostic representation is used for transformed variance calculations.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SparseRowOperator {
     pub ncols: usize,

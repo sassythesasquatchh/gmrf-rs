@@ -1,8 +1,8 @@
 # Contributing
 
-`gmrf-core` is intentionally limited to reusable Gaussian precision algebra
-and sparse solver functionality. Keep FEEC assembly, application models, and
-case-study code in downstream repositories.
+`gmrf-core` contains reusable Gaussian precision algebra and sparse solver
+functionality. Downstream repositories provide FEEC assembly, application
+models, and case-study workflows.
 
 Before submitting a change, run:
 

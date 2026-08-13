@@ -152,7 +152,7 @@ impl Gmrf {
         }
     }
 
-    /// Provide a precision factorization to enable sampling without refactorizing Q.
+    /// Provide a reusable precision factorization for sampling.
     pub fn with_precision_sqrt(mut self, q_factor: SparseCholeskyFactor) -> Self {
         self.q_factor = Some(q_factor);
         self
@@ -895,8 +895,7 @@ fn dense_row_as_vector(matrix: &DenseMatrix, row: usize) -> Vector {
 ///
 /// The result is independent of `rhs` and equals
 /// `Sigma - Sigma C^T (C Sigma C^T)^-1 C Sigma`. This is the dense low-rank
-/// Schur complement kernel used when callers already have an explicit covariance
-/// rather than a precision-backed [`Gmrf`].
+/// Schur complement kernel for callers with an explicit covariance matrix.
 pub fn constrained_dense_covariance(
     covariance: &DenseMatrix,
     constraint_matrix: &DenseMatrix,
