@@ -1,8 +1,8 @@
 //! Shared sampling and marginal-variance utilities.
 //!
 //! This module owns generic Monte Carlo, Hutchinson, local RB, and selected-inverse
-//! variance utilities so downstream FEEC workflows do not need to duplicate
-//! batching, seeding, diagnostics, or transformed-operator estimators.
+//! variance utilities. Downstream FEEC workflows share its batching, seeding,
+//! diagnostics, and transformed-operator estimators.
 
 use crate::constrained::ConstrainedPrecisionSolver;
 use crate::gmrf::TransformedVarianceDecomposition;
@@ -69,8 +69,8 @@ pub struct WeightedTraceEstimate {
 /// Paired transformed marginal-variance and weighted-trace estimate.
 ///
 /// The weighted trace is computed from the same transformed variance solves or
-/// Hutchinson probe batches, so callers can report both diagnostics without
-/// repeating covariance actions.
+/// Hutchinson probe batches, so both diagnostics reuse the same covariance
+/// actions.
 #[derive(Debug, Clone)]
 pub struct TransformedVarianceWeightedTraceEstimate {
     pub variances: VarianceEstimate,
@@ -1350,6 +1350,35 @@ pub fn estimate_monte_carlo_variances(
     finalize_variance_estimate(VarianceEstimator::MonteCarlo, batches, batch_sizes)
 }
 
+/// Estimate constrained latent marginal variances in deterministic batches.
+pub fn estimate_monte_carlo_constrained_variances(
+    gmrf: &mut Gmrf,
+    constraint_matrix: &DenseMatrix,
+    constraint_rhs: &Vector,
+    num_samples: usize,
+    batch_count: usize,
+    rng_seed: u64,
+) -> Result<VarianceEstimate, GmrfError> {
+    if constraint_matrix.nrows() == 0 {
+        return estimate_monte_carlo_variances(gmrf, num_samples, batch_count, rng_seed);
+    }
+    let batch_sizes = probe_batch_sizes(num_samples, batch_count)?;
+    let mean = gmrf.constrained_mean(constraint_matrix, constraint_rhs)?;
+    let dim = gmrf.dimension();
+    let mut batches = Vec::with_capacity(batch_sizes.len());
+    for (batch_index, batch_size) in batch_sizes.iter().copied().enumerate() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(probe_batch_seed(rng_seed, batch_index));
+        let mut variances = Vector::zeros(dim);
+        for _ in 0..batch_size {
+            let draw = gmrf.sample_constrained(constraint_matrix, constraint_rhs, &mut rng)?;
+            let centered = &draw - &mean;
+            variances += centered.component_mul(&centered);
+        }
+        batches.push(variances / batch_size as f64);
+    }
+    finalize_variance_estimate(VarianceEstimator::MonteCarlo, batches, batch_sizes)
+}
+
 /// Estimate transformed variances using Gaussian posterior Monte Carlo samples.
 pub fn estimate_monte_carlo_transformed_variances(
     gmrf: &mut Gmrf,
@@ -1391,6 +1420,48 @@ pub fn estimate_monte_carlo_transformed_variances(
         batches.push(variances / batch_size as f64);
     }
 
+    finalize_variance_estimate(VarianceEstimator::MonteCarlo, batches, batch_sizes)
+}
+
+/// Estimate constrained transformed marginal variances in deterministic batches.
+pub fn estimate_monte_carlo_constrained_transformed_variances(
+    gmrf: &mut Gmrf,
+    operator: &SparseRowOperator,
+    constraint_matrix: &DenseMatrix,
+    constraint_rhs: &Vector,
+    num_samples: usize,
+    batch_count: usize,
+    rng_seed: u64,
+) -> Result<VarianceEstimate, GmrfError> {
+    if operator.ncols != gmrf.dimension() {
+        return Err(GmrfError::DimensionMismatch(
+            "operator columns must match latent dimension",
+        ));
+    }
+    if constraint_matrix.nrows() == 0 {
+        return estimate_monte_carlo_transformed_variances(
+            gmrf,
+            operator,
+            num_samples,
+            batch_count,
+            rng_seed,
+        );
+    }
+    let batch_sizes = probe_batch_sizes(num_samples, batch_count)?;
+    let mean = gmrf.constrained_mean(constraint_matrix, constraint_rhs)?;
+    let transformed_mean = operator.apply(&mean)?;
+    let mut batches = Vec::with_capacity(batch_sizes.len());
+    for (batch_index, batch_size) in batch_sizes.iter().copied().enumerate() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(probe_batch_seed(rng_seed, batch_index));
+        let mut variances = Vector::zeros(operator.nrows());
+        for _ in 0..batch_size {
+            let draw = gmrf.sample_constrained(constraint_matrix, constraint_rhs, &mut rng)?;
+            let transformed = operator.apply(&draw)?;
+            let centered = &transformed - &transformed_mean;
+            variances += centered.component_mul(&centered);
+        }
+        batches.push(variances / batch_size as f64);
+    }
     finalize_variance_estimate(VarianceEstimator::MonteCarlo, batches, batch_sizes)
 }
 
@@ -2833,6 +2904,58 @@ mod tests {
         let variances =
             estimate_constrained_mc_variances(&mut gmrf, &constraints, &rhs, 4, &mut rng).unwrap();
         assert_eq!(variances.len(), 2);
+    }
+
+    #[test]
+    fn batched_constrained_mc_is_seeded_and_supports_transforms() {
+        let make_gmrf = || {
+            let precision = identity_precision(2);
+            let factor = precision.cholesky_sqrt_lower().unwrap();
+            Gmrf::from_mean_and_precision(Vector::zeros(2), precision)
+                .unwrap()
+                .with_precision_sqrt(factor)
+        };
+        let constraints = DenseMatrix::from_fn(1, 2, |_, _| 1.0);
+        let rhs = Vector::zeros(1);
+        let mut first_gmrf = make_gmrf();
+        let mut second_gmrf = make_gmrf();
+        let first = estimate_monte_carlo_constrained_variances(
+            &mut first_gmrf,
+            &constraints,
+            &rhs,
+            4096,
+            8,
+            17,
+        )
+        .unwrap();
+        let second = estimate_monte_carlo_constrained_variances(
+            &mut second_gmrf,
+            &constraints,
+            &rhs,
+            4096,
+            8,
+            17,
+        )
+        .unwrap();
+        assert_eq!(first.values, second.values);
+        assert_eq!(first.batch_sizes, vec![512; 8]);
+        assert!((first.values[0] - 0.5).abs() < 0.05);
+        assert!((first.values[1] - 0.5).abs() < 0.05);
+
+        let difference = SparseRowOperator::new(2, vec![vec![(0, 1.0), (1, -1.0)]]).unwrap();
+        let mut transformed_gmrf = make_gmrf();
+        let transformed = estimate_monte_carlo_constrained_transformed_variances(
+            &mut transformed_gmrf,
+            &difference,
+            &constraints,
+            &rhs,
+            4096,
+            8,
+            17,
+        )
+        .unwrap();
+        assert!((transformed.values[0] - 2.0).abs() < 0.15);
+        assert!(transformed.batch_standard_error.is_some());
     }
 
     #[test]
