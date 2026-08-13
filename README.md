@@ -6,10 +6,9 @@ solves, linear Gaussian conditioning, equality constraints, sampling,
 spatiotemporal precision storage, covariance actions, and uncertainty
 estimators.
 
-The initial `0.1.0` release deliberately contains one crate. Finite-element
-assembly, SPDE model construction, nonlinear model orchestration,
-visualization, and application-specific workflows belong in downstream
-libraries rather than this repository.
+The initial `0.1.0` release contains the `gmrf-core` crate. Downstream libraries
+provide finite-element assembly, SPDE model construction, nonlinear model
+orchestration, visualization, and application-specific workflows.
 
 ## Use from Git
 

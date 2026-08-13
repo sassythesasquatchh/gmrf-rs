@@ -1,7 +1,7 @@
 //! Solvers for sparse precision systems with dense low-rank linear constraints.
 //!
 //! This module provides reusable KKT solves for constrained Gaussian covariance
-//! actions. It is generic Gaussian algebra and should not live in case-study code.
+//! actions shared by downstream statistical models.
 
 use crate::linear::SparseRowOperator;
 use crate::types::{CooMatrix, DenseMatrix, GmrfError, SparseLuFactor, SparseMatrix, Vector};

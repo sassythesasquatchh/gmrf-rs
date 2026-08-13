@@ -264,8 +264,8 @@ impl SparseMatrix {
 
     /// Compute a sparse Cholesky factorization with a fill-reducing ordering.
     ///
-    /// The returned factor stores the permutation internally, so it can be reused for
-    /// solves and sampling without losing the ordering information.
+    /// The returned factor stores the permutation internally for reuse in solves
+    /// and sampling.
     pub fn cholesky_sqrt_lower(&self) -> Result<SparseCholeskyFactor, GmrfError> {
         SparseCholeskyFactor::factorize(self)
     }
