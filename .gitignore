@@ -1,0 +1,5 @@
+/target
+/.DS_Store
+/isotropic_posterior_samples.csv
+/isotropic_posterior_samples.vtk
+/posterior_sample.vtk
