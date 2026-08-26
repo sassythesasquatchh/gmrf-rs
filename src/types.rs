@@ -301,7 +301,7 @@ impl SparseMatrix {
 }
 
 /// Sparse Cholesky factorization with permutation support.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SparseCholeskyFactor {
     symbolic: Arc<SymbolicCholesky<usize>>,
     values: Vec<f64>,

@@ -5,6 +5,7 @@
 //! utilities that will be shared across FEM, observation, and visualization crates.
 
 pub mod constrained;
+pub mod diagnostics;
 pub mod gmrf;
 pub mod linear;
 pub mod observation;
@@ -16,6 +17,9 @@ pub mod uncertainty;
 pub mod vtk;
 
 pub use constrained::{assemble_kkt_matrix, ConstrainedPrecisionSolver};
+pub use diagnostics::{
+    covariance_to_correlation, gaussian_predictive_diagnostics, GaussianPredictiveDiagnostics,
+};
 pub use gmrf::{
     constrained_dense_covariance, ConstrainedVarianceDecomposition, Gmrf,
     TransformedCovarianceDecomposition, TransformedVarianceDecomposition,
