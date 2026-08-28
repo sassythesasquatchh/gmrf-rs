@@ -574,7 +574,51 @@ impl Gmrf {
 
     /// Solve `Q x = rhs` using cached factorization when possible.
     pub fn solve_precision(&mut self, rhs: &Vector) -> Result<Vector, GmrfError> {
+        self.covariance_action(rhs)
+    }
+
+    /// Apply the covariance `Q^{-1}` to a latent-coordinate right-hand side.
+    ///
+    /// This is the probability-facing name for a precision solve. It reuses a
+    /// cached sparse factorization when one is available and otherwise follows
+    /// the configured precision solver path.
+    pub fn covariance_action(&mut self, rhs: &Vector) -> Result<Vector, GmrfError> {
+        if rhs.len() != self.dimension() {
+            return Err(GmrfError::DimensionMismatch(
+                "covariance right hand side must match latent dimension",
+            ));
+        }
         self.solve_precision_internal(rhs)
+    }
+
+    /// Apply the covariance conditioned on homogeneous linear equalities.
+    ///
+    /// For constraints `C x = b`, the Gaussian covariance is independent of
+    /// the affine target `b`. This method therefore accepts only `C` and
+    /// applies
+    /// `Q^{-1} - Q^{-1} C^T (C Q^{-1} C^T)^{-1} C Q^{-1}`.
+    /// The same cached precision solves and dense low-rank Schur complement as
+    /// constrained means are reused.
+    pub fn constrained_covariance_action(
+        &mut self,
+        rhs: &Vector,
+        constraint_matrix: &DenseMatrix,
+    ) -> Result<Vector, GmrfError> {
+        if rhs.len() != self.dimension() {
+            return Err(GmrfError::DimensionMismatch(
+                "covariance right hand side must match latent dimension",
+            ));
+        }
+        self.validate_constraint_matrix(constraint_matrix)?;
+        let unconstrained = self.covariance_action(rhs)?;
+        if constraint_matrix.nrows() == 0 {
+            return Ok(unconstrained);
+        }
+        self.apply_linear_constraints(
+            &unconstrained,
+            constraint_matrix,
+            &Vector::zeros(constraint_matrix.nrows()),
+        )
     }
 
     /// Approximate marginal variances via Hutchinson probing of `diag(Q^{-1})`.
@@ -1049,6 +1093,70 @@ mod tests {
             Gmrf::from_information_and_precision_with_sqrt(info, precision, q_sqrt).unwrap();
         let diff = (direct.mean() - via_sqrt.mean()).norm();
         assert!(diff < 1e-12);
+    }
+
+    #[test]
+    fn covariance_action_matches_exact_dense_reference() {
+        let mut coo = CooMatrix::new(2, 2);
+        coo.push(0, 0, 4.0);
+        coo.push(0, 1, 1.0);
+        coo.push(1, 0, 1.0);
+        coo.push(1, 1, 3.0);
+        let precision = SparseMatrix::from(&coo);
+        let factor = precision.cholesky_sqrt_lower().unwrap();
+        let mut gmrf = Gmrf::from_mean_and_precision(Vector::zeros(2), precision)
+            .unwrap()
+            .with_precision_sqrt(factor);
+        let rhs = Vector::from_vec(vec![2.0, -1.0]);
+
+        let actual = gmrf.covariance_action(&rhs).unwrap();
+        let exact_covariance =
+            DenseMatrix::from_fn(2, 2, |row, col| [[3.0, -1.0], [-1.0, 4.0]][row][col] / 11.0);
+        let expected = dense_matvec(&exact_covariance, &rhs).unwrap();
+
+        assert!((&actual - &expected).norm() < 1e-12);
+    }
+
+    #[test]
+    fn constrained_covariance_action_matches_exact_dense_reference() {
+        let mut coo = CooMatrix::new(2, 2);
+        coo.push(0, 0, 4.0);
+        coo.push(0, 1, 1.0);
+        coo.push(1, 0, 1.0);
+        coo.push(1, 1, 3.0);
+        let precision = SparseMatrix::from(&coo);
+        let mut gmrf = Gmrf::from_mean_and_precision(Vector::zeros(2), precision).unwrap();
+        let constraints = DenseMatrix::from_fn(1, 2, |_, col| [1.0, 2.0][col]);
+        let rhs = Vector::from_vec(vec![2.0, -1.0]);
+
+        let actual = gmrf
+            .constrained_covariance_action(&rhs, &constraints)
+            .unwrap();
+        let exact_covariance =
+            DenseMatrix::from_fn(2, 2, |row, col| [[3.0, -1.0], [-1.0, 4.0]][row][col] / 11.0);
+        let exact_constrained =
+            constrained_dense_covariance(&exact_covariance, &constraints).unwrap();
+        let expected = dense_matvec(&exact_constrained, &rhs).unwrap();
+
+        assert!((&actual - &expected).norm() < 1e-12);
+        assert!(dense_matvec(&constraints, &actual).unwrap().norm() < 1e-12);
+    }
+
+    #[test]
+    fn covariance_actions_reject_incompatible_dimensions() {
+        let mut gmrf =
+            Gmrf::from_mean_and_precision(Vector::zeros(2), identity_precision(2)).unwrap();
+        let wrong_rhs = Vector::zeros(3);
+        let wrong_constraints = DenseMatrix::zeros(1, 3);
+
+        assert!(matches!(
+            gmrf.covariance_action(&wrong_rhs),
+            Err(GmrfError::DimensionMismatch(_))
+        ));
+        assert!(matches!(
+            gmrf.constrained_covariance_action(&Vector::zeros(2), &wrong_constraints),
+            Err(GmrfError::DimensionMismatch(_))
+        ));
     }
 
     #[test]
