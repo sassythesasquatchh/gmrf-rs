@@ -5,6 +5,8 @@
 
 use crate::linear::SparseRowOperator;
 use crate::types::{CooMatrix, DenseMatrix, GmrfError, SparseLuFactor, SparseMatrix, Vector};
+use crate::{SparseDirectResourceReport, SparseDirectSolverKind};
+use std::time::Instant;
 
 const VARIANCE_TOLERANCE: f64 = 1e-10;
 
@@ -46,6 +48,48 @@ impl ConstrainedPrecisionSolver {
             constraint_dim: constraint_matrix.nrows(),
             kkt_nnz,
         })
+    }
+
+    /// Assemble and factorize the KKT system with honest phase/resource reporting.
+    ///
+    /// KKT assembly is timed separately. Faer's high-level sparse LU wrapper
+    /// exposes only combined symbolic/numeric setup, so the report marks the
+    /// separate analysis, numeric-factorization, and factor-storage quantities
+    /// unavailable instead of estimating them.
+    pub fn new_with_resource_report(
+        precision: &SparseMatrix,
+        constraint_matrix: &DenseMatrix,
+    ) -> Result<(Self, SparseDirectResourceReport), GmrfError> {
+        if precision.nrows() != precision.ncols() {
+            return Err(GmrfError::DimensionMismatch(
+                "constrained precision must be square",
+            ));
+        }
+        if constraint_matrix.ncols() != precision.nrows() {
+            return Err(GmrfError::DimensionMismatch(
+                "constraint matrix columns must match precision dimension",
+            ));
+        }
+
+        let assembly_start = Instant::now();
+        let kkt = assemble_kkt_matrix(precision, constraint_matrix)?;
+        let assembly_wall_time = assembly_start.elapsed();
+        let kkt_nnz = kkt.nnz();
+        let (factor, mut report) =
+            SparseLuFactor::factorize_with_resource_report(&kkt).map_err(|err| match err {
+                GmrfError::SingularMatrix => GmrfError::SingularConstraintSystem,
+                other => other,
+            })?;
+        report.record_assembly(assembly_wall_time);
+        Ok((
+            Self {
+                factor,
+                latent_dim: precision.nrows(),
+                constraint_dim: constraint_matrix.nrows(),
+                kkt_nnz,
+            },
+            report,
+        ))
     }
 
     pub fn latent_dim(&self) -> usize {
@@ -97,6 +141,31 @@ impl ConstrainedPrecisionSolver {
             self.latent_dim,
             (0..self.latent_dim).map(|i| rhs[i]),
         ))
+    }
+
+    /// Solve the KKT system and append the full successful solve wall time to `report`.
+    ///
+    /// This timing includes KKT right-hand-side construction, the sparse LU
+    /// solve, and extraction of the latent block.
+    pub fn solve_with_resource_report(
+        &self,
+        latent_rhs: &Vector,
+        constraint_rhs: &Vector,
+        report: &mut SparseDirectResourceReport,
+    ) -> Result<Vector, GmrfError> {
+        report.validate_for(
+            SparseDirectSolverKind::SparseLu,
+            self.latent_dim + self.constraint_dim,
+        )?;
+        let start = Instant::now();
+        let solution = self.solve(latent_rhs, constraint_rhs)?;
+        report.record_solve(
+            SparseDirectSolverKind::SparseLu,
+            self.latent_dim + self.constraint_dim,
+            start.elapsed(),
+            1,
+        )?;
+        Ok(solution)
     }
 
     /// Solve for the constrained posterior mean/covariance action with zero
@@ -206,7 +275,10 @@ fn clamp_small_negative_variance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{constrained_dense_covariance, SparseRowOperator};
+    use crate::{
+        constrained_dense_covariance, ResourceMeasurement, SparseDirectSolverKind,
+        SparseRowOperator,
+    };
 
     fn identity_precision(size: usize) -> SparseMatrix {
         let mut coo = CooMatrix::new(size, size);
@@ -235,6 +307,39 @@ mod tests {
             (0..2).map(|j| constrained[(i, j)] * rhs[j]).sum::<f64>()
         });
         assert!((solved - expected).norm() < 1e-10);
+    }
+
+    #[test]
+    fn timed_constrained_solver_reports_kkt_assembly_and_combined_lu_setup() {
+        let precision = identity_precision(2);
+        let constraints = DenseMatrix::from_fn(1, 2, |_, _| 1.0);
+        let (solver, mut report) =
+            ConstrainedPrecisionSolver::new_with_resource_report(&precision, &constraints).unwrap();
+
+        assert_eq!(report.solver, SparseDirectSolverKind::SparseLu);
+        assert_eq!(report.dimension, 3);
+        assert_eq!(report.coefficient_nnz, solver.kkt_nnz());
+        assert!(matches!(
+            report.assembly.wall_time,
+            ResourceMeasurement::Measured(_)
+        ));
+        assert!(report.analysis.wall_time.is_unavailable());
+        assert!(report.numeric_factorization.wall_time.is_unavailable());
+        assert!(matches!(
+            report.combined_factor_setup.wall_time,
+            ResourceMeasurement::Measured(_)
+        ));
+        assert!(report.factor_storage_nonzeros.is_unavailable());
+
+        let latent_rhs = Vector::from_vec(vec![2.0, 0.0]);
+        let constrained_rhs = Vector::zeros(1);
+        let measured = solver
+            .solve_with_resource_report(&latent_rhs, &constrained_rhs, &mut report)
+            .unwrap();
+        let baseline = solver.solve(&latent_rhs, &constrained_rhs).unwrap();
+        assert!((measured - baseline).norm() < 1e-12);
+        assert_eq!(report.solve.calls, 1);
+        assert_eq!(report.solve.right_hand_sides, 1);
     }
 
     #[test]

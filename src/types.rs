@@ -3,6 +3,7 @@
 //! The crate uses `faer` and `faer-sparse` internally. The public wrappers fix
 //! coordinate, permutation, and error conventions independently of that backend.
 
+use crate::resource::{SparseDirectResourceReport, SparseDirectSolverKind};
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::solvers::Solve;
 use faer::perm::PermRef;
@@ -20,6 +21,7 @@ use std::{
     hash::{Hash, Hasher},
     ops::{Add, AddAssign, Div, Index, IndexMut, Mul, Sub, SubAssign},
     sync::Arc,
+    time::Instant,
 };
 use thiserror::Error;
 
@@ -278,6 +280,14 @@ impl SparseMatrix {
         SparseCholeskyFactor::factorize_with_ordering(self, ordering)
     }
 
+    /// Factorize with separately measured symbolic and numeric wall times.
+    pub fn cholesky_sqrt_lower_with_resource_report(
+        &self,
+        ordering: CholeskyOrdering,
+    ) -> Result<(SparseCholeskyFactor, SparseDirectResourceReport), GmrfError> {
+        SparseCholeskyFactor::factorize_with_resource_report(self, ordering)
+    }
+
     /// Analyze the sparse Cholesky pattern using the requested symmetric ordering.
     ///
     /// The returned symbolic factorization can be reused for matrices with the
@@ -399,6 +409,29 @@ impl SparseCholeskyFactor {
         ordering: CholeskyOrdering,
     ) -> Result<Self, GmrfError> {
         SparseCholeskySymbolic::analyze_with_ordering(precision, ordering)?.factor(precision)
+    }
+
+    /// Compute a sparse Cholesky factorization and report symbolic/numeric wall times.
+    pub fn factorize_with_resource_report(
+        precision: &SparseMatrix,
+        ordering: CholeskyOrdering,
+    ) -> Result<(Self, SparseDirectResourceReport), GmrfError> {
+        let analysis_start = Instant::now();
+        let symbolic = SparseCholeskySymbolic::analyze_with_ordering(precision, ordering)?;
+        let analysis_wall_time = analysis_start.elapsed();
+
+        let factor_start = Instant::now();
+        let factor = symbolic.factor(precision)?;
+        let factor_wall_time = factor_start.elapsed();
+        let diagnostics = factor.diagnostics();
+        let report = SparseDirectResourceReport::cholesky(
+            diagnostics.dimension,
+            diagnostics.input_nnz,
+            diagnostics.lower_factor_nnz,
+            analysis_wall_time,
+            factor_wall_time,
+        );
+        Ok((factor, report))
     }
 
     fn factorize_with_symbolic(
@@ -599,6 +632,23 @@ impl SparseCholeskyFactor {
         Ok(())
     }
 
+    /// Solve in place and append the successful solve wall time to `report`.
+    pub fn solve_in_place_with_resource_report(
+        &self,
+        rhs: &mut Vector,
+        report: &mut SparseDirectResourceReport,
+    ) -> Result<(), GmrfError> {
+        report.validate_for(SparseDirectSolverKind::Cholesky, self.dimension())?;
+        let start = Instant::now();
+        self.solve_in_place(rhs)?;
+        report.record_solve(
+            SparseDirectSolverKind::Cholesky,
+            self.dimension(),
+            start.elapsed(),
+            1,
+        )
+    }
+
     /// Solve `A X = RHS` in-place for multiple right hand sides.
     pub fn solve_dense_in_place(&self, rhs: &mut DenseMatrix) -> Result<(), GmrfError> {
         if rhs.nrows() != self.dimension() {
@@ -616,6 +666,24 @@ impl SparseCholeskyFactor {
         let llt = LltRef::new(&self.symbolic, &self.values);
         llt.solve_in_place_with_conj(Conj::No, rhs.as_mut(), par, stack);
         Ok(())
+    }
+
+    /// Solve dense right-hand sides and append wall time and RHS count to `report`.
+    pub fn solve_dense_in_place_with_resource_report(
+        &self,
+        rhs: &mut DenseMatrix,
+        report: &mut SparseDirectResourceReport,
+    ) -> Result<(), GmrfError> {
+        report.validate_for(SparseDirectSolverKind::Cholesky, self.dimension())?;
+        let right_hand_sides = rhs.ncols();
+        let start = Instant::now();
+        self.solve_dense_in_place(rhs)?;
+        report.record_solve(
+            SparseDirectSolverKind::Cholesky,
+            self.dimension(),
+            start.elapsed(),
+            right_hand_sides,
+        )
     }
 
     /// Solve `A x = rhs`, returning the solution.
@@ -855,6 +923,20 @@ impl SparseLuFactor {
         })
     }
 
+    /// Factorize with a measured combined symbolic/numeric setup wall time.
+    ///
+    /// The backend does not expose those two LU phases separately; the report
+    /// therefore leaves both separate phase fields explicitly unavailable.
+    pub fn factorize_with_resource_report(
+        matrix: &SparseMatrix,
+    ) -> Result<(Self, SparseDirectResourceReport), GmrfError> {
+        let start = Instant::now();
+        let factor = Self::factorize(matrix)?;
+        let report =
+            SparseDirectResourceReport::sparse_lu(matrix.nrows(), matrix.nnz(), start.elapsed());
+        Ok((factor, report))
+    }
+
     pub fn dimension(&self) -> usize {
         self.dimension
     }
@@ -869,6 +951,23 @@ impl SparseLuFactor {
 
         self.factor.solve_in_place(rhs.as_col_mut().as_mat_mut());
         Ok(())
+    }
+
+    /// Solve in place and append the successful solve wall time to `report`.
+    pub fn solve_in_place_with_resource_report(
+        &self,
+        rhs: &mut Vector,
+        report: &mut SparseDirectResourceReport,
+    ) -> Result<(), GmrfError> {
+        report.validate_for(SparseDirectSolverKind::SparseLu, self.dimension())?;
+        let start = Instant::now();
+        self.solve_in_place(rhs)?;
+        report.record_solve(
+            SparseDirectSolverKind::SparseLu,
+            self.dimension(),
+            start.elapsed(),
+            1,
+        )
     }
 
     /// Solve `A x = rhs`, returning the solution.
@@ -1349,6 +1448,7 @@ mod tests {
     use super::{
         CholeskyOrdering, CholeskyOrderingKind, CooMatrix, Permutation, SparseMatrix, Vector,
     };
+    use crate::{ResourceMeasurement, SparseDirectSolverKind};
 
     #[test]
     fn permutation_validation_accepts_bijections() {
@@ -1415,6 +1515,53 @@ mod tests {
                 ordering: CholeskyOrderingKind::ApproximateMinimumDegree,
             }
         );
+    }
+
+    #[test]
+    fn timed_cholesky_reports_separate_phases_and_repeated_solves() {
+        let mut coo = CooMatrix::new(3, 3);
+        coo.push(0, 0, 4.0);
+        coo.push(0, 1, 1.0);
+        coo.push(1, 0, 1.0);
+        coo.push(1, 1, 3.0);
+        coo.push(1, 2, 1.0);
+        coo.push(2, 1, 1.0);
+        coo.push(2, 2, 2.0);
+        let precision = SparseMatrix::from(&coo);
+
+        let (factor, mut report) = precision
+            .cholesky_sqrt_lower_with_resource_report(CholeskyOrdering::Amd)
+            .unwrap();
+        assert_eq!(report.solver, SparseDirectSolverKind::Cholesky);
+        assert_eq!(report.dimension, 3);
+        assert_eq!(report.coefficient_nnz, 7);
+        assert_eq!(
+            report.factor_storage_nonzeros,
+            ResourceMeasurement::Measured(5)
+        );
+        assert!(matches!(
+            report.analysis.wall_time,
+            ResourceMeasurement::Measured(_)
+        ));
+        assert!(matches!(
+            report.numeric_factorization.wall_time,
+            ResourceMeasurement::Measured(_)
+        ));
+        assert!(report.combined_factor_setup.wall_time.is_unavailable());
+        assert_eq!(report.assembly.wall_time, ResourceMeasurement::NotRecorded);
+
+        let expected = Vector::from_vec(vec![0.5, -1.2, 0.7]);
+        let mut rhs = precision.mul_vec(&expected);
+        factor
+            .solve_in_place_with_resource_report(&mut rhs, &mut report)
+            .unwrap();
+        assert!((rhs - expected).norm() < 1e-10);
+        assert_eq!(report.solve.calls, 1);
+        assert_eq!(report.solve.right_hand_sides, 1);
+        assert!(matches!(
+            report.solve.wall_time,
+            ResourceMeasurement::Measured(_)
+        ));
     }
 
     #[test]

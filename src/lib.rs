@@ -11,6 +11,7 @@ pub mod gmrf;
 pub mod linear;
 pub mod observation;
 pub mod precision;
+pub mod resource;
 pub mod solver;
 pub mod spacetime;
 pub mod supported;
@@ -41,6 +42,10 @@ pub use observation::{
     LinearObservationTerm, LinearObservationUpdateStats, StackedObservationSystem,
 };
 pub use precision::{PrecisionOperator, PrecisionStorage};
+pub use resource::{
+    DirectPhaseResourceUsage, RepeatedSolveResourceUsage, ResourceMeasurement,
+    SparseDirectResourceReport, SparseDirectSolverKind,
+};
 pub use solver::{
     DirectBackend, IterativeMethod, IterativeSolveReport, JacobiPreconditioner, PreconditionerKind,
     Solver, SolverAlgorithm, SolverConfig,
