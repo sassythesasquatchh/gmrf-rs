@@ -1209,6 +1209,30 @@ pub enum GmrfError {
     #[error("precision matrix is not positive definite")]
     NonPositiveDefinite,
 
+    /// An input defining or querying a supported Gaussian contains a non-finite entry.
+    #[error("supported Gaussian {0} contains a non-finite entry")]
+    NonFiniteSupportedInput(&'static str),
+
+    /// The ambient quadratic energy of a supported Gaussian is not symmetric.
+    #[error("supported Gaussian ambient energy is not symmetric")]
+    NonSymmetricSupportedEnergy,
+
+    /// The sparse support constraints do not have full row rank.
+    #[error("supported Gaussian constraints are not full row-rank")]
+    RankDeficientSupportConstraints,
+
+    /// The ambient quadratic energy is not positive definite on the support.
+    #[error("supported Gaussian energy is not positive definite on the constraint nullspace")]
+    NonPositiveSupportedEnergy,
+
+    /// Sparse LU failed after the supported-law rank and energy certificates succeeded.
+    #[error("certified supported Gaussian KKT factorization failed")]
+    SupportedKktFactorizationFailed,
+
+    /// A mathematically meaningful implementation is not available for this query.
+    #[error("unsupported Gaussian query: {0}")]
+    UnsupportedQuery(&'static str),
+
     /// Linear equality constraints were singular under the prior covariance.
     #[error("linear constraints are singular or not full row-rank")]
     SingularConstraintSystem,

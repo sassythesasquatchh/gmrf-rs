@@ -13,6 +13,7 @@ pub mod observation;
 pub mod precision;
 pub mod solver;
 pub mod spacetime;
+pub mod supported;
 pub mod types;
 pub mod uncertainty;
 pub mod vtk;
@@ -45,6 +46,10 @@ pub use solver::{
     Solver, SolverAlgorithm, SolverConfig,
 };
 pub use spacetime::{add_sparse_blocks, BlockTridiagonalPrecision, TimeStackedObservationBuilder};
+pub use supported::{
+    assemble_supported_kkt_matrix, SelectedCoordinates, SupportedGaussianCertificate,
+    SupportedGaussianCertificateResiduals, SupportedGaussianFactor, SupportedGaussianSystem,
+};
 pub use types::{
     CholeskyOrdering, GmrfError, OriginalIndex, Permutation, PermutedIndex, SparseCholeskyFactor,
     SparseCholeskySymbolic, SparseLuFactor, SparseMatrix, Vector,

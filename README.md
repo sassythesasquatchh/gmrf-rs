@@ -38,6 +38,14 @@ Exact constraints \(Cx=d\) use sparse KKT solves. Means, covariance actions,
 samples, marginal variances, and transformed variances include the
 constraint-induced covariance correction.
 
+`SupportedGaussianSystem` covers the distinct case in which an ambient energy
+is semidefinite and becomes a proper Gaussian law only after restriction to a
+sparse affine support. It certifies full row rank of the support constraints
+and positive energy on their nullspace without jitter, then uses an indefinite
+KKT solve for means and covariance actions. The KKT matrix is not exposed as a
+Gaussian precision. Sampling and support log determinants remain explicitly
+unsupported until support-aware algorithms are implemented.
+
 ## Capabilities
 
 - sparse precision matrices and information-form Gaussian models;
@@ -46,6 +54,8 @@ constraint-induced covariance correction.
 - linear Gaussian observations with scalar or sparse noise precision;
 - sparse row selection, stacking, composition, and transpose actions;
 - exact linear equality constraints;
+- certified sparse affine-support Gaussian laws with selected-coordinate
+  covariance access;
 - sampling from proper and constrained Gaussian models;
 - latent and transformed covariance actions;
 - exact marginal and transformed variances;

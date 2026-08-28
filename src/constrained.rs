@@ -6,7 +6,6 @@
 use crate::linear::SparseRowOperator;
 use crate::types::{CooMatrix, DenseMatrix, GmrfError, SparseLuFactor, SparseMatrix, Vector};
 
-const KKT_EPS: f64 = 1e-12;
 const VARIANCE_TOLERANCE: f64 = 1e-10;
 
 /// Sparse KKT solver for `Q x + C^T λ = rhs`, `C x = constraint_rhs`.
@@ -144,7 +143,12 @@ pub fn assemble_kkt_matrix(
     let mut coo = CooMatrix::new(total_dim, total_dim);
 
     for (row, col, value) in precision.triplet_iter() {
-        if value.abs() > KKT_EPS {
+        if !value.is_finite() {
+            return Err(GmrfError::NumericalInstability(
+                "precision matrix contains non-finite entries",
+            ));
+        }
+        if *value != 0.0 {
             coo.push(row, col, *value);
         }
     }
@@ -152,7 +156,12 @@ pub fn assemble_kkt_matrix(
     for i in 0..constraint_dim {
         for j in 0..state_dim {
             let value = constraint_matrix[(i, j)];
-            if value.abs() <= KKT_EPS {
+            if !value.is_finite() {
+                return Err(GmrfError::NumericalInstability(
+                    "constraint matrix contains non-finite entries",
+                ));
+            }
+            if value == 0.0 {
                 continue;
             }
             coo.push(j, state_dim + i, value);
@@ -214,5 +223,20 @@ mod tests {
         let variances = solver.exact_transformed_variances(&operator).unwrap();
         assert!((variances[0] - 0.5).abs() < 1e-12);
         assert!((variances[1] - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dense_constraint_kkt_assembly_preserves_tiny_nonzeros() {
+        let precision = identity_precision(2);
+        let constraints = DenseMatrix::from_fn(1, 2, |_, col| if col == 0 { 1e-14 } else { 1.0 });
+        let kkt = assemble_kkt_matrix(&precision, &constraints).unwrap();
+        let upper = kkt
+            .triplet_iter()
+            .find_map(|(row, col, value)| ((row, col) == (0, 2)).then_some(*value));
+        let lower = kkt
+            .triplet_iter()
+            .find_map(|(row, col, value)| ((row, col) == (2, 0)).then_some(*value));
+        assert_eq!(upper, Some(1e-14));
+        assert_eq!(lower, Some(1e-14));
     }
 }
