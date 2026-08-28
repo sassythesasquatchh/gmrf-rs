@@ -26,9 +26,9 @@ pub fn covariance_to_correlation(covariance: &[Vec<f64>]) -> Result<Vec<Vec<f64>
         .map(|value| value.abs())
         .fold(1.0_f64, f64::max);
     let tolerance = 1.0e-10 * scale;
-    for row in 0..dimension {
-        for column in 0..row {
-            if (covariance[row][column] - covariance[column][row]).abs() > tolerance {
+    for (row_index, row) in covariance.iter().enumerate() {
+        for (column_index, column) in covariance.iter().enumerate().take(row_index) {
+            if (row[column_index] - column[row_index]).abs() > tolerance {
                 return Err(GmrfError::NumericalInstability(
                     "covariance matrix must be symmetric within numerical tolerance",
                 ));
