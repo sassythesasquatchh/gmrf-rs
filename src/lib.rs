@@ -34,9 +34,9 @@ pub use observation::{
     build_linear_observation_matrix, condition_linear_gaussian_with_factor,
     ht_precision_weighted_h, ht_precision_weighted_observations, ht_weighted_h,
     ht_weighted_observations, linear_observation_update, linear_observation_update_with_stats,
-    observation_selector, FactoredLinearGaussianPosterior, LinearObservationConditioningStats,
-    LinearObservationNoise, LinearObservationStackBuilder, LinearObservationTerm,
-    LinearObservationUpdateStats, StackedObservationSystem,
+    multiply_sparse, observation_selector, FactoredLinearGaussianPosterior,
+    LinearObservationConditioningStats, LinearObservationNoise, LinearObservationStackBuilder,
+    LinearObservationTerm, LinearObservationUpdateStats, StackedObservationSystem,
 };
 pub use precision::{PrecisionOperator, PrecisionStorage};
 pub use solver::{

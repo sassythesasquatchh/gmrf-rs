@@ -211,6 +211,21 @@ pub fn add_sparse(a: &SparseMatrix, b: &SparseMatrix) -> SparseMatrix {
     SparseMatrix::from(sum)
 }
 
+/// Multiply two explicit sparse matrices using faer's sparse-sparse kernel.
+pub fn multiply_sparse(
+    left: &SparseMatrix,
+    right: &SparseMatrix,
+) -> Result<SparseMatrix, GmrfError> {
+    if left.ncols() != right.nrows() {
+        return Err(GmrfError::DimensionMismatch(
+            "sparse matrix dimensions are incompatible for multiplication",
+        ));
+    }
+    sparse_sparse_matmul(left.as_ref(), right.as_ref(), 1.0, get_global_parallelism())
+        .map(SparseMatrix::from)
+        .map_err(|_| GmrfError::NumericalInstability("faer sparse-sparse multiplication failed"))
+}
+
 /// Sparse observation system assembled from one or more scalar-variance terms.
 #[derive(Debug, Clone)]
 pub struct StackedObservationSystem {
@@ -514,6 +529,33 @@ mod tests {
         for value in entries.values() {
             assert!(value.abs() <= 1e-12, "matrix entry diff {value}");
         }
+    }
+
+    #[test]
+    fn sparse_multiplication_handles_rectangular_matrices() {
+        let mut left_coo = CooMatrix::new(2, 3);
+        left_coo.push(0, 0, 2.0);
+        left_coo.push(0, 2, -1.0);
+        left_coo.push(1, 1, 3.0);
+        let left = SparseMatrix::from(&left_coo);
+
+        let mut right_coo = CooMatrix::new(3, 2);
+        right_coo.push(0, 0, 4.0);
+        right_coo.push(1, 0, -2.0);
+        right_coo.push(1, 1, 1.0);
+        right_coo.push(2, 1, 5.0);
+        let right = SparseMatrix::from(&right_coo);
+
+        let product = multiply_sparse(&left, &right).unwrap();
+        let mut expected_coo = CooMatrix::new(2, 2);
+        expected_coo.push(0, 0, 8.0);
+        expected_coo.push(0, 1, -5.0);
+        expected_coo.push(1, 0, -6.0);
+        expected_coo.push(1, 1, 3.0);
+        let expected = SparseMatrix::from(&expected_coo);
+
+        assert_matrix_entries_close(&product, &expected);
+        assert!(multiply_sparse(&right, &right).is_err());
     }
 
     #[test]

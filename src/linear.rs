@@ -273,26 +273,11 @@ impl SparseRowOperator {
             ));
         }
 
-        let mut rows = Vec::with_capacity(left.nrows());
-        for left_row in &left.rows {
-            let mut combined = std::collections::BTreeMap::<usize, f64>::new();
-            for (intermediate, weight) in left_row {
-                for (col, value) in &right.rows[*intermediate] {
-                    *combined.entry(*col).or_insert(0.0) += *weight * *value;
-                }
-            }
-            rows.push(
-                combined
-                    .into_iter()
-                    .filter_map(|(col, value)| (value != 0.0).then_some((col, value)))
-                    .collect(),
-            );
-        }
-
-        Ok(Self {
-            ncols: right.ncols,
-            rows,
-        })
+        let product = crate::observation::multiply_sparse(
+            &left.to_sparse_matrix(),
+            &right.to_sparse_matrix(),
+        )?;
+        Self::from_sparse_matrix(&product)
     }
 }
 
