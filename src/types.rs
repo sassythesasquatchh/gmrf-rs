@@ -1410,6 +1410,22 @@ pub enum GmrfError {
     #[error("precision matrix is not positive definite")]
     NonPositiveDefinite,
 
+    /// A dense Gaussian input contains a NaN or infinity.
+    #[error("dense Gaussian {0} contains a non-finite entry")]
+    NonFiniteGaussianInput(&'static str),
+
+    /// A dense covariance block that must be symmetric is not exactly symmetric.
+    ///
+    /// The exact check is deliberate: callers that assemble covariance actions
+    /// independently must audit and symmetrize those actions under an explicit
+    /// application-level policy before constructing a Gaussian conditioner.
+    #[error("dense Gaussian covariance {0} is not exactly symmetric")]
+    NonSymmetricGaussianCovariance(&'static str),
+
+    /// A scalar observation-noise variance is negative or non-finite.
+    #[error("observation-noise variance must be finite and nonnegative")]
+    InvalidObservationNoiseVariance,
+
     /// An input defining or querying a supported Gaussian contains a non-finite entry.
     #[error("supported Gaussian {0} contains a non-finite entry")]
     NonFiniteSupportedInput(&'static str),

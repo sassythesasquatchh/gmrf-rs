@@ -7,6 +7,7 @@
 
 pub mod constrained;
 pub mod diagnostics;
+pub mod exact_observation;
 pub mod gmrf;
 pub mod linear;
 pub mod observation;
@@ -22,6 +23,9 @@ pub mod vtk;
 pub use constrained::{assemble_kkt_matrix, ConstrainedPrecisionSolver};
 pub use diagnostics::{
     covariance_to_correlation, gaussian_predictive_diagnostics, GaussianPredictiveDiagnostics,
+};
+pub use exact_observation::{
+    ExactObservationPosteriorDiagnostics, PreparedExactObservationPosterior,
 };
 pub use gmrf::{
     constrained_dense_covariance, ConstrainedVarianceDecomposition, Gmrf,
@@ -57,9 +61,9 @@ pub use supported::{
     SupportedGaussianCertificateResiduals, SupportedGaussianFactor, SupportedGaussianSystem,
 };
 pub use types::{
-    CholeskyOrdering, CholeskyOrderingKind, GmrfError, OriginalIndex, Permutation, PermutedIndex,
-    SparseCholeskyDiagnostics, SparseCholeskyFactor, SparseCholeskySymbolic, SparseLuFactor,
-    SparseMatrix, Vector,
+    CholeskyOrdering, CholeskyOrderingKind, DenseMatrix, GmrfError, OriginalIndex, Permutation,
+    PermutedIndex, SparseCholeskyDiagnostics, SparseCholeskyFactor, SparseCholeskySymbolic,
+    SparseLuFactor, SparseMatrix, Vector,
 };
 pub use uncertainty::{
     clip_vector_to_prior, estimate_batched_hutchinson_variances,
