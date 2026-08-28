@@ -281,7 +281,7 @@ impl SparseRowOperator {
     }
 }
 
-/// Linear operator paired with a known square root operator, mirroring Julia's `LinearMapWithSqrt`.
+/// Linear operator paired with a known square-root operator.
 pub struct OperatorWithSqrt<O: LinearOperator, S: LinearOperator> {
     operator: O,
     sqrt: S,

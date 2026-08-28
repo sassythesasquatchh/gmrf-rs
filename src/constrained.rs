@@ -1,7 +1,7 @@
 //! Solvers for sparse precision systems with dense low-rank linear constraints.
 //!
-//! This module provides reusable KKT solves for constrained Gaussian covariance
-//! actions shared by downstream statistical models.
+//! The KKT factorization provides constrained means and covariance actions for
+//! any model expressed by a sparse precision and linear equality constraints.
 
 use crate::linear::SparseRowOperator;
 use crate::types::{CooMatrix, DenseMatrix, GmrfError, SparseLuFactor, SparseMatrix, Vector};

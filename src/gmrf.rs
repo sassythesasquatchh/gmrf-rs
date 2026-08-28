@@ -1,8 +1,8 @@
-//! Core Gaussian Markov Random Field container and helpers.
+//! Gaussian Markov random fields in precision form.
 //!
-//! This module mirrors the Julia `GMRF` struct: it stores mean information, precision data,
-//! and cached factorizations for repeated solves. Sampling uses the precision factor when
-//! available, while stochastic variance estimators can reuse the same factorization.
+//! A `Gmrf` stores mean or information data, a precision representation, and
+//! optional cached factorizations. Sampling and covariance estimators reuse the
+//! factorization when one is available.
 
 use crate::linear::SparseRowOperator;
 use crate::precision::PrecisionStorage;

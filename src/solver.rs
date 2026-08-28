@@ -1,8 +1,7 @@
-//! Solver configuration and caching for precision systems.
+//! Solver configuration and reusable factorizations for precision systems.
 //!
-//! This module mirrors the Julia workflow of configuring linear solvers and reusing
-//! factorizations. Direct factorizations are cached, while iterative solvers rely on
-//! lightweight preconditioners to keep matrix-free operators usable.
+//! Direct factorizations are cached. Iterative solvers use lightweight
+//! preconditioners so that matrix-free precision operators remain usable.
 
 use crate::linear::{LinearOperator, MatrixOperator};
 use crate::types::{GmrfError, SparseCholeskyFactor, SparseMatrix, Vector};
@@ -185,7 +184,7 @@ impl Preconditioner for JacobiPreconditioner {
     }
 }
 
-/// Solver wrapper that orchestrates direct factorization reuse and iterative fallbacks.
+/// Solver that reuses direct factorizations and selects configured iterative fallbacks.
 pub struct Solver {
     config: SolverConfig,
     cache: SolverCache,

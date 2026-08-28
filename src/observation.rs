@@ -1,7 +1,7 @@
-//! Observation and conditioning helpers for Gaussian observation models.
+//! Linear Gaussian observations and sparse posterior updates.
 //!
-//! These utilities mirror the Julia workflow of forming H^T R^-1 H and H^T R^-1 y
-//! updates when conditioning a Gaussian prior on linear observations.
+//! Conditioning forms `H^T R^-1 H` and `H^T R^-1 (y - b)` for one or more
+//! observation terms.
 
 use crate::types::{CooMatrix, GmrfError, SparseCholeskyFactor, SparseMatrix, Vector};
 use faer::get_global_parallelism;

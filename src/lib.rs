@@ -1,8 +1,9 @@
-//! Core Gaussian Markov Random Field types for the Rust port of `GaussianMarkovRandomFields.jl`.
+//! Gaussian models represented by sparse precision matrices.
 //!
-//! This crate mirrors the Julia `GMRF` constructors, precision abstractions, and solver plumbing.
-//! It establishes reusable math aliases, a sparse precision representation, and sampling/variance
-//! utilities that will be shared across FEM, observation, and visualization crates.
+//! The crate provides sparse precision storage, factorization, linear Gaussian
+//! conditioning, exact constraints, covariance actions, sampling, and exact or
+//! stochastic uncertainty estimates without depending on an application
+//! discretization.
 
 pub mod constrained;
 pub mod diagnostics;

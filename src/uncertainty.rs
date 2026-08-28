@@ -1,8 +1,8 @@
-//! Shared sampling and marginal-variance utilities.
+//! Exact and stochastic covariance and marginal-variance algorithms.
 //!
-//! This module owns generic Monte Carlo, Hutchinson, local RB, and selected-inverse
-//! variance utilities. Downstream FEEC workflows share its batching, seeding,
-//! diagnostics, and transformed-operator estimators.
+//! Monte Carlo, Hutchinson, local Rao--Blackwellised, selected-inverse, and
+//! exact-solve methods share deterministic batching, seeding, diagnostics, and
+//! transformed-operator support.
 
 use crate::constrained::ConstrainedPrecisionSolver;
 use crate::gmrf::TransformedVarianceDecomposition;

@@ -1,7 +1,7 @@
-//! VTK writers for visualizing GMRF fields on regular grids.
+//! VTK writers for GMRF fields on regular grids.
 //!
-//! This mirrors the Julia tutorials where posterior samples are exported for
-//! external visualization (e.g., ParaView) while keeping a sparse-first workflow.
+//! The writers export posterior fields and samples for visualization in tools
+//! such as ParaView.
 
 use crate::types::Vector;
 use std::fs::File;

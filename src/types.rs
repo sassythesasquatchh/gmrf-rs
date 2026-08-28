@@ -1,7 +1,7 @@
-//! Shared math aliases and errors for Gaussian Markov Random Field primitives.
+//! Matrix, factorization, coordinate, and error types for GMRF calculations.
 //!
-//! The gmrf workspace uses faer + faer-sparse for linear algebra. This module provides
-//! thin wrappers and helpers so downstream crates don't depend on faer directly.
+//! The crate uses `faer` and `faer-sparse` internally. The public wrappers fix
+//! coordinate, permutation, and error conventions independently of that backend.
 
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::solvers::Solve;
