@@ -14,6 +14,7 @@ pub struct ConstrainedPrecisionSolver {
     factor: SparseLuFactor,
     latent_dim: usize,
     constraint_dim: usize,
+    kkt_nnz: usize,
 }
 
 impl ConstrainedPrecisionSolver {
@@ -33,15 +34,17 @@ impl ConstrainedPrecisionSolver {
             ));
         }
 
-        let factor = SparseLuFactor::factorize(&assemble_kkt_matrix(precision, constraint_matrix)?)
-            .map_err(|err| match err {
-                GmrfError::SingularMatrix => GmrfError::SingularConstraintSystem,
-                other => other,
-            })?;
+        let kkt = assemble_kkt_matrix(precision, constraint_matrix)?;
+        let kkt_nnz = kkt.nnz();
+        let factor = SparseLuFactor::factorize(&kkt).map_err(|err| match err {
+            GmrfError::SingularMatrix => GmrfError::SingularConstraintSystem,
+            other => other,
+        })?;
         Ok(Self {
             factor,
             latent_dim: precision.nrows(),
             constraint_dim: constraint_matrix.nrows(),
+            kkt_nnz,
         })
     }
 
@@ -51,6 +54,21 @@ impl ConstrainedPrecisionSolver {
 
     pub fn constraint_dim(&self) -> usize {
         self.constraint_dim
+    }
+
+    /// Stored nonzeros of the assembled KKT coefficient matrix, before LU fill.
+    pub fn kkt_nnz(&self) -> usize {
+        self.kkt_nnz
+    }
+
+    /// LU fill is not exposed by faer's high-level sparse LU wrapper.
+    ///
+    /// Returning a typed unsupported result avoids reporting KKT input
+    /// nonzeros as factor nonzeros.
+    pub fn factor_nnz(&self) -> Result<usize, GmrfError> {
+        Err(GmrfError::UnsupportedQuery(
+            "the sparse LU backend does not expose numeric factor nonzeros",
+        ))
     }
 
     /// Solve the constrained KKT system and return the latent block.
@@ -203,6 +221,11 @@ mod tests {
         let precision = identity_precision(2);
         let constraints = DenseMatrix::from_fn(1, 2, |_, _| 1.0);
         let solver = ConstrainedPrecisionSolver::new(&precision, &constraints).unwrap();
+        assert_eq!(solver.kkt_nnz(), 6);
+        assert!(matches!(
+            solver.factor_nnz(),
+            Err(GmrfError::UnsupportedQuery(_))
+        ));
         let rhs = Vector::from_vec(vec![2.0, 0.0]);
         let solved = solver.solve_covariance_action(&rhs).unwrap();
 

@@ -305,6 +305,7 @@ impl SparseMatrix {
 pub struct SparseCholeskyFactor {
     symbolic: Arc<SymbolicCholesky<usize>>,
     values: Vec<f64>,
+    diagnostics: SparseCholeskyDiagnostics,
 }
 
 /// Reusable sparse Cholesky symbolic analysis for a fixed sparsity pattern.
@@ -313,6 +314,7 @@ pub struct SparseCholeskySymbolic {
     symbolic: Arc<SymbolicCholesky<usize>>,
     side: Side,
     pattern: SparsePatternFingerprint,
+    diagnostics: SparseCholeskyDiagnostics,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -333,6 +335,49 @@ pub enum CholeskyOrdering {
     Identity,
     /// Use a caller-supplied permutation with the `x_tilde = P x` convention.
     Custom(Permutation),
+}
+
+/// Stable identifier for the ordering requested during Cholesky analysis.
+///
+/// For [`Self::ApproximateMinimumDegree`] and [`Self::Custom`], the resulting
+/// permutation remains available through [`SparseCholeskyFactor::permutation`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CholeskyOrderingKind {
+    /// Approximate minimum degree ordering supplied by faer.
+    ApproximateMinimumDegree,
+    /// Identity ordering; factor coordinates equal input coordinates.
+    Identity,
+    /// Caller-supplied permutation.
+    Custom,
+}
+
+impl CholeskyOrdering {
+    fn kind(&self) -> CholeskyOrderingKind {
+        match self {
+            Self::Amd => CholeskyOrderingKind::ApproximateMinimumDegree,
+            Self::Identity => CholeskyOrderingKind::Identity,
+            Self::Custom(_) => CholeskyOrderingKind::Custom,
+        }
+    }
+}
+
+/// Storage and fill diagnostics for one sparse Cholesky factorization.
+///
+/// `input_nnz` counts every entry stored by the caller. Cholesky reads one
+/// triangle of a symmetric matrix, so `input_triangle_nnz` counts entries in
+/// the triangle actually supplied to symbolic analysis. This makes
+/// `fill_ratio` independent of whether the caller stored one triangle or both.
+/// `lower_factor_nnz` is the number of numeric slots allocated for `L`; for a
+/// supernodal factor this intentionally includes its dense block storage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SparseCholeskyDiagnostics {
+    pub dimension: usize,
+    pub input_nnz: usize,
+    pub input_triangle_nnz: usize,
+    pub lower_factor_nnz: usize,
+    /// `nnz(L) / input_triangle_nnz`, or `None` for an empty input triangle.
+    pub fill_ratio: Option<f64>,
+    pub ordering: CholeskyOrderingKind,
 }
 
 /// Sparse LU factorization with partial row pivoting.
@@ -360,6 +405,7 @@ impl SparseCholeskyFactor {
         precision: &SparseMatrix,
         symbolic: Arc<SymbolicCholesky<usize>>,
         side: Side,
+        diagnostics: SparseCholeskyDiagnostics,
     ) -> Result<Self, GmrfError> {
         let mut values = vec![0.0; symbolic.len_val()];
         let par = get_global_parallelism();
@@ -378,7 +424,12 @@ impl SparseCholeskyFactor {
             )
             .map_err(|_| GmrfError::NonPositiveDefinite)?;
 
-        Ok(Self { symbolic, values })
+        debug_assert_eq!(values.len(), diagnostics.lower_factor_nnz);
+        Ok(Self {
+            symbolic,
+            values,
+            diagnostics,
+        })
     }
 
     pub fn dimension(&self) -> usize {
@@ -400,6 +451,7 @@ impl SparseCholeskySymbolic {
 
         let side = select_cholesky_side(precision);
         let pattern = sparse_pattern_fingerprint(precision);
+        let ordering_kind = ordering.kind();
         let symbolic = match &ordering {
             CholeskyOrdering::Amd => factorize_symbolic_cholesky(
                 precision.as_ref().symbolic(),
@@ -435,10 +487,23 @@ impl SparseCholeskySymbolic {
         }
         .map_err(|_| GmrfError::NonPositiveDefinite)?;
 
+        let input_triangle_nnz = cholesky_input_triangle_nnz(precision, side);
+        let lower_factor_nnz = symbolic.len_val();
+        let diagnostics = SparseCholeskyDiagnostics {
+            dimension: precision.nrows(),
+            input_nnz: precision.nnz(),
+            input_triangle_nnz,
+            lower_factor_nnz,
+            fill_ratio: (input_triangle_nnz != 0)
+                .then_some(lower_factor_nnz as f64 / input_triangle_nnz as f64),
+            ordering: ordering_kind,
+        };
+
         Ok(Self {
             symbolic: Arc::new(symbolic),
             side,
             pattern,
+            diagnostics,
         })
     }
 
@@ -457,7 +522,13 @@ impl SparseCholeskySymbolic {
             precision,
             Arc::clone(&self.symbolic),
             self.side,
+            self.diagnostics,
         )
+    }
+
+    /// Diagnostics available after symbolic analysis and before numeric factorization.
+    pub fn diagnostics(&self) -> SparseCholeskyDiagnostics {
+        self.diagnostics
     }
 }
 
@@ -465,6 +536,11 @@ impl SparseCholeskyFactor {
     /// Number of stored numeric entries in the Cholesky factor.
     pub fn nnz(&self) -> usize {
         self.values.len()
+    }
+
+    /// Storage, fill, and requested-ordering diagnostics for this factorization.
+    pub fn diagnostics(&self) -> SparseCholeskyDiagnostics {
+        self.diagnostics
     }
 
     /// Return the factor permutation using the `x_tilde = P x` convention.
@@ -818,6 +894,16 @@ fn select_cholesky_side(precision: &SparseMatrix) -> Side {
     } else {
         Side::Lower
     }
+}
+
+fn cholesky_input_triangle_nnz(precision: &SparseMatrix, side: Side) -> usize {
+    precision
+        .triplet_iter()
+        .filter(|(row, col, _)| match side {
+            Side::Upper => row <= col,
+            Side::Lower => row >= col,
+        })
+        .count()
 }
 
 fn sparse_pattern_fingerprint(matrix: &SparseMatrix) -> SparsePatternFingerprint {
@@ -1260,7 +1346,9 @@ pub enum GmrfError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CholeskyOrdering, CooMatrix, Permutation, SparseMatrix, Vector};
+    use super::{
+        CholeskyOrdering, CholeskyOrderingKind, CooMatrix, Permutation, SparseMatrix, Vector,
+    };
 
     #[test]
     fn permutation_validation_accepts_bijections() {
@@ -1316,6 +1404,62 @@ mod tests {
         let factor = q.cholesky_sqrt_lower().unwrap();
         assert_eq!(factor.dimension(), 3);
         assert_eq!(factor.nnz(), 5);
+        assert_eq!(
+            factor.diagnostics(),
+            super::SparseCholeskyDiagnostics {
+                dimension: 3,
+                input_nnz: 7,
+                input_triangle_nnz: 5,
+                lower_factor_nnz: 5,
+                fill_ratio: Some(1.0),
+                ordering: CholeskyOrderingKind::ApproximateMinimumDegree,
+            }
+        );
+    }
+
+    #[test]
+    fn cholesky_diagnostics_report_fill_independently_of_symmetric_storage() {
+        let mut full = CooMatrix::new(4, 4);
+        for index in 0..4 {
+            full.push(index, index, 5.0);
+        }
+        for (row, col) in [(0, 1), (1, 2), (2, 3)] {
+            full.push(row, col, -1.0);
+            full.push(col, row, -1.0);
+        }
+        let full = SparseMatrix::from(&full);
+        let full_factor = full
+            .cholesky_sqrt_lower_with_ordering(CholeskyOrdering::Identity)
+            .unwrap();
+        let full_diagnostics = full_factor.diagnostics();
+
+        let mut one_triangle = CooMatrix::new(4, 4);
+        for index in 0..4 {
+            one_triangle.push(index, index, 5.0);
+        }
+        for (row, col) in [(0, 1), (1, 2), (2, 3)] {
+            one_triangle.push(row, col, -1.0);
+        }
+        let one_triangle = SparseMatrix::from(&one_triangle);
+        let one_triangle_factor = one_triangle
+            .cholesky_sqrt_lower_with_ordering(CholeskyOrdering::Identity)
+            .unwrap();
+        let one_triangle_diagnostics = one_triangle_factor.diagnostics();
+
+        assert_eq!(full_diagnostics.dimension, 4);
+        assert_eq!(full_diagnostics.input_nnz, 10);
+        assert_eq!(one_triangle_diagnostics.input_nnz, 7);
+        assert_eq!(full_diagnostics.input_triangle_nnz, 7);
+        assert_eq!(one_triangle_diagnostics.input_triangle_nnz, 7);
+        assert_eq!(full_diagnostics.lower_factor_nnz, 7);
+        assert_eq!(one_triangle_diagnostics.lower_factor_nnz, 7);
+        assert_eq!(full_diagnostics.fill_ratio, Some(1.0));
+        assert_eq!(one_triangle_diagnostics.fill_ratio, Some(1.0));
+        assert_eq!(full_diagnostics.ordering, CholeskyOrderingKind::Identity);
+        assert_eq!(
+            one_triangle_diagnostics.ordering,
+            CholeskyOrderingKind::Identity
+        );
     }
 
     #[test]
@@ -1339,6 +1483,14 @@ mod tests {
 
         assert_eq!(amd.dimension(), 4);
         assert_eq!(identity.dimension(), 4);
+        assert_eq!(
+            amd.diagnostics().ordering,
+            CholeskyOrderingKind::ApproximateMinimumDegree
+        );
+        assert_eq!(
+            identity.diagnostics().ordering,
+            CholeskyOrderingKind::Identity
+        );
     }
 
     #[test]
@@ -1355,6 +1507,14 @@ mod tests {
         let ordering =
             CholeskyOrdering::Custom(Permutation::from_orig_to_perm(vec![2, 0, 3, 1]).unwrap());
         let factor = q.cholesky_sqrt_lower_with_ordering(ordering).unwrap();
+        assert_eq!(factor.diagnostics().ordering, CholeskyOrderingKind::Custom);
+        assert_eq!(factor.diagnostics().input_nnz, 10);
+        assert_eq!(factor.diagnostics().input_triangle_nnz, 7);
+        assert!(factor.diagnostics().lower_factor_nnz > 7);
+        assert_eq!(
+            factor.diagnostics().fill_ratio,
+            Some(factor.diagnostics().lower_factor_nnz as f64 / 7.0)
+        );
 
         let x = Vector::from_vec(vec![0.25, -0.5, 1.25, 0.75]);
         let b = q.mul_vec(&x);
@@ -1384,6 +1544,8 @@ mod tests {
         let b = q.mul_vec(&x);
         assert!((reused.solve(&b).unwrap() - &x).norm() < 1e-10);
         assert_eq!(reused.nnz(), direct.nnz());
+        assert_eq!(symbolic.diagnostics(), reused.diagnostics());
+        assert_eq!(reused.diagnostics(), direct.diagnostics());
     }
 
     #[test]

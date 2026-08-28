@@ -51,8 +51,9 @@ pub use supported::{
     SupportedGaussianCertificateResiduals, SupportedGaussianFactor, SupportedGaussianSystem,
 };
 pub use types::{
-    CholeskyOrdering, GmrfError, OriginalIndex, Permutation, PermutedIndex, SparseCholeskyFactor,
-    SparseCholeskySymbolic, SparseLuFactor, SparseMatrix, Vector,
+    CholeskyOrdering, CholeskyOrderingKind, GmrfError, OriginalIndex, Permutation, PermutedIndex,
+    SparseCholeskyDiagnostics, SparseCholeskyFactor, SparseCholeskySymbolic, SparseLuFactor,
+    SparseMatrix, Vector,
 };
 pub use uncertainty::{
     clip_vector_to_prior, estimate_batched_hutchinson_variances,

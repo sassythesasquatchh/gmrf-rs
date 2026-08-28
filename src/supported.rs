@@ -17,7 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::linear::SparseRowOperator;
 use crate::observation::{add_sparse, multiply_sparse};
 use crate::types::{
-    CooMatrix, DenseMatrix, GmrfError, SparseCholeskyFactor, SparseLuFactor, SparseMatrix, Vector,
+    CooMatrix, DenseMatrix, GmrfError, SparseCholeskyDiagnostics, SparseCholeskyFactor,
+    SparseLuFactor, SparseMatrix, Vector,
 };
 
 const VARIANCE_TOLERANCE: f64 = 1e-10;
@@ -130,6 +131,18 @@ impl SupportedGaussianCertificate {
 
     pub fn supported_energy_factor_nnz(&self) -> usize {
         self.supported_energy_factor.nnz()
+    }
+
+    /// Diagnostics for the constraint-Gram rank certificate, when constraints exist.
+    pub fn constraint_gram_factor_diagnostics(&self) -> Option<SparseCholeskyDiagnostics> {
+        self.constraint_gram_factor
+            .as_ref()
+            .map(SparseCholeskyFactor::diagnostics)
+    }
+
+    /// Diagnostics for the positive-energy-on-support certificate.
+    pub fn supported_energy_factor_diagnostics(&self) -> SparseCholeskyDiagnostics {
+        self.supported_energy_factor.diagnostics()
     }
 
     pub fn residuals(&self) -> SupportedGaussianCertificateResiduals {
@@ -262,7 +275,7 @@ impl SupportedGaussianFactor {
         self.kkt_nnz
     }
 
-    /// LU fill is not exposed by the current sparse backend wrapper.
+    /// LU fill is not exposed by faer's high-level sparse LU wrapper.
     ///
     /// Returning a typed unsupported result avoids misreporting KKT input
     /// nonzeros as factor nonzeros.
@@ -678,6 +691,19 @@ mod tests {
                 .supported_energy_relative_residual
                 < 1e-12
         );
+        let constraint_diagnostics = factor
+            .certificate()
+            .constraint_gram_factor_diagnostics()
+            .unwrap();
+        assert_eq!(constraint_diagnostics.dimension, 1);
+        assert_eq!(constraint_diagnostics.input_nnz, 1);
+        assert_eq!(constraint_diagnostics.lower_factor_nnz, 1);
+        let energy_diagnostics = factor.certificate().supported_energy_factor_diagnostics();
+        assert_eq!(energy_diagnostics.dimension, 3);
+        assert_eq!(
+            energy_diagnostics.lower_factor_nnz,
+            factor.certificate().supported_energy_factor_nnz()
+        );
     }
 
     #[test]
@@ -744,6 +770,10 @@ mod tests {
             .certificate()
             .residuals()
             .constraint_gram_relative_residual
+            .is_none());
+        assert!(factor
+            .certificate()
+            .constraint_gram_factor_diagnostics()
             .is_none());
     }
 
