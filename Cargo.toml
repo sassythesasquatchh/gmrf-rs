@@ -10,10 +10,6 @@ repository = "https://github.com/sassythesasquatchh/gmrf-rs"
 readme = "README.md"
 publish = false
 
-[workspace]
-resolver = "2"
-members = ["."]
-
 [dependencies]
 faer = "0.21"
 rand = "0.8"
