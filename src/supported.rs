@@ -169,7 +169,7 @@ impl SupportedGaussianSystem {
         validate_finite_matrix(&energy, "ambient energy")?;
         validate_finite_matrix(&constraints, "constraint matrix")?;
         validate_finite_vector(&affine_rhs, "affine constraint right-hand side")?;
-        validate_exact_symmetry(&energy)?;
+        validate_scale_relative_symmetry(&energy)?;
         let certificate = certify_supported_energy(&energy, &constraints)?;
         Ok(Self {
             energy,
@@ -516,16 +516,38 @@ fn validate_finite_vector(vector: &Vector, role: &'static str) -> Result<(), Gmr
     Ok(())
 }
 
-fn validate_exact_symmetry(energy: &SparseMatrix) -> Result<(), GmrfError> {
+fn validate_scale_relative_symmetry(energy: &SparseMatrix) -> Result<(), GmrfError> {
     let entries = energy
         .triplet_iter()
         .filter_map(|(row, col, value)| (*value != 0.0).then_some(((row, col), *value)))
         .collect::<BTreeMap<_, _>>();
-    for ((row, col), value) in &entries {
-        let transpose = entries.get(&(*col, *row)).copied().unwrap_or(0.0);
-        if *value != transpose {
-            return Err(GmrfError::NonSymmetricSupportedEnergy);
-        }
+
+    let entry_scale = entries
+        .values()
+        .fold(0.0_f64, |scale, value| scale.max(value.abs()));
+    // Sparse products assembled through different traversal orders can differ
+    // by a few ulps. This is the same scale-relative rule as the root proper-
+    // precision contract. It validates only: no entry is changed or dropped.
+    let tolerance = 64.0 * f64::EPSILON * entry_scale;
+    let (row, column, max_abs_difference) =
+        entries
+            .iter()
+            .fold((0, 0, 0.0_f64), |current, (&(row, column), &value)| {
+                let difference =
+                    (value - entries.get(&(column, row)).copied().unwrap_or(0.0)).abs();
+                if difference > current.2 {
+                    (row, column, difference)
+                } else {
+                    current
+                }
+            });
+    if max_abs_difference > tolerance {
+        return Err(GmrfError::NonSymmetricSupportedEnergy {
+            row,
+            column,
+            max_abs_difference,
+            tolerance,
+        });
     }
     Ok(())
 }
@@ -757,7 +779,7 @@ mod tests {
         let empty = SparseMatrix::from(&CooMatrix::new(0, 2));
         assert!(matches!(
             SupportedGaussianSystem::new(asymmetric, empty).unwrap_err(),
-            GmrfError::NonSymmetricSupportedEnergy
+            GmrfError::NonSymmetricSupportedEnergy { .. }
         ));
 
         let nonfinite = sparse_from_dense(&[&[f64::NAN]]);
@@ -783,6 +805,37 @@ mod tests {
             .unwrap_err(),
             GmrfError::NonFiniteSupportedInput("affine constraint right-hand side")
         ));
+    }
+
+    #[test]
+    fn symmetry_validation_is_scale_relative_and_never_symmetrizes() {
+        for scale in [1.0e-12, 1.0, 1.0e12] {
+            let upper = 0.5 * scale;
+            let lower = (0.5 + 32.0 * f64::EPSILON) * scale;
+            let energy = sparse_from_dense(&[&[2.0 * scale, upper], &[lower, 2.0 * scale]]);
+            let empty = SparseMatrix::from(&CooMatrix::new(0, 2));
+            let system = SupportedGaussianSystem::new(energy, empty).unwrap();
+            let retained_upper = system
+                .energy()
+                .triplet_iter()
+                .find_map(|(row, col, value)| ((row, col) == (0, 1)).then_some(*value));
+            let retained_lower = system
+                .energy()
+                .triplet_iter()
+                .find_map(|(row, col, value)| ((row, col) == (1, 0)).then_some(*value));
+            assert_eq!(retained_upper, Some(upper));
+            assert_eq!(retained_lower, Some(lower));
+
+            let asymmetric = sparse_from_dense(&[
+                &[2.0 * scale, 0.5 * scale],
+                &[(0.5 + 1.0e-8) * scale, 2.0 * scale],
+            ]);
+            let empty = SparseMatrix::from(&CooMatrix::new(0, 2));
+            assert!(matches!(
+                SupportedGaussianSystem::new(asymmetric, empty).unwrap_err(),
+                GmrfError::NonSymmetricSupportedEnergy { .. }
+            ));
+        }
     }
 
     #[test]

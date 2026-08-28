@@ -1214,8 +1214,15 @@ pub enum GmrfError {
     NonFiniteSupportedInput(&'static str),
 
     /// The ambient quadratic energy of a supported Gaussian is not symmetric.
-    #[error("supported Gaussian ambient energy is not symmetric")]
-    NonSymmetricSupportedEnergy,
+    #[error(
+        "supported Gaussian ambient energy is not symmetric: entry ({row}, {column}) differs from its transpose by {max_abs_difference:.6e}, exceeding tolerance {tolerance:.6e}"
+    )]
+    NonSymmetricSupportedEnergy {
+        row: usize,
+        column: usize,
+        max_abs_difference: f64,
+        tolerance: f64,
+    },
 
     /// The sparse support constraints do not have full row rank.
     #[error("supported Gaussian constraints are not full row-rank")]
