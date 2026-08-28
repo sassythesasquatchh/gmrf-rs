@@ -74,6 +74,37 @@ impl Gmrf {
         })
     }
 
+    /// Construct a GMRF from a mean, precision, and matching precomputed
+    /// sparse Cholesky factorization.
+    ///
+    /// Unlike [`Self::from_information_and_precision_with_sqrt`], this
+    /// constructor does not perform a solve because the supplied vector is
+    /// already the mean. It is useful when factorization timing must remain
+    /// separate from subsequent covariance-action timings.
+    pub fn from_mean_and_precision_with_sqrt(
+        mean: Vector,
+        precision: SparseMatrix,
+        q_factor: SparseCholeskyFactor,
+    ) -> Result<Self, GmrfError> {
+        let dimension = precision.nrows();
+        if mean.len() != dimension || precision.ncols() != dimension {
+            return Err(GmrfError::DimensionMismatch(
+                "mean and precision dimensions must match",
+            ));
+        }
+        if q_factor.dimension() != dimension {
+            return Err(GmrfError::DimensionMismatch(
+                "precision factor dimension must match mean length",
+            ));
+        }
+        Ok(Self {
+            mean,
+            precision: PrecisionStorage::Matrix(precision),
+            q_factor: Some(q_factor),
+            solver: Solver::default(),
+        })
+    }
+
     /// Construct a GMRF from an information vector (η) and sparse precision matrix (Q).
     pub fn from_information_and_precision(
         information: Vector,
@@ -1093,6 +1124,17 @@ mod tests {
             Gmrf::from_information_and_precision_with_sqrt(info, precision, q_sqrt).unwrap();
         let diff = (direct.mean() - via_sqrt.mean()).norm();
         assert!(diff < 1e-12);
+    }
+
+    #[test]
+    fn mean_constructor_with_sqrt_reuses_factor_without_changing_mean() {
+        let precision = identity_precision(3);
+        let mean = Vector::from_vec(vec![1.0, 0.5, -2.0]);
+        let factor = precision.cholesky_sqrt_lower().unwrap();
+        let gmrf =
+            Gmrf::from_mean_and_precision_with_sqrt(mean.clone(), precision, factor).unwrap();
+        assert_eq!(gmrf.mean(), &mean);
+        assert!(gmrf.precision_factor().is_some());
     }
 
     #[test]

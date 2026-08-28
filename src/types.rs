@@ -342,6 +342,11 @@ pub enum CholeskyOrdering {
     #[default]
     Amd,
     /// Keep the matrix in its input ordering.
+    ///
+    /// The backend is invoked through a side-normalized custom identity
+    /// permutation to handle full-, upper-, and lower-triangle storage
+    /// correctly. This preserves coordinates but may perform an `O(n)`
+    /// identity copy during a high-level solve.
     Identity,
     /// Use a caller-supplied permutation with the `x_tilde = P x` convention.
     Custom(Permutation),
@@ -492,12 +497,23 @@ impl SparseCholeskySymbolic {
                 SymmetricOrdering::Amd,
                 CholeskySymbolicParams::default(),
             ),
-            CholeskyOrdering::Identity => factorize_symbolic_cholesky(
-                precision.as_ref().symbolic(),
-                side,
-                SymmetricOrdering::Identity,
-                CholeskySymbolicParams::default(),
-            ),
+            CholeskyOrdering::Identity => {
+                // Faer 0.21's raw `SymmetricOrdering::Identity` path bypasses
+                // its self-adjoint triangle normalization: full symmetric
+                // storage can produce an incorrect factor and lower-only
+                // storage can panic during symbolic analysis. Routing the
+                // identity permutation through the custom-ordering path keeps
+                // coordinates unchanged while exercising the same correct
+                // triangle-normalization path used by other permutations.
+                let identity = (0..precision.nrows()).collect::<Vec<_>>();
+                let custom = PermRef::new_checked(&identity, &identity, identity.len());
+                factorize_symbolic_cholesky(
+                    precision.as_ref().symbolic(),
+                    side,
+                    SymmetricOrdering::Custom(custom),
+                    CholeskySymbolicParams::default(),
+                )
+            }
             CholeskyOrdering::Custom(permutation) => {
                 if permutation.dimension() != precision.nrows() {
                     return Err(GmrfError::DimensionMismatch(
@@ -1446,7 +1462,8 @@ pub enum GmrfError {
 #[cfg(test)]
 mod tests {
     use super::{
-        CholeskyOrdering, CholeskyOrderingKind, CooMatrix, Permutation, SparseMatrix, Vector,
+        CholeskyOrdering, CholeskyOrderingKind, CooMatrix, DenseMatrix, Permutation, Side,
+        SparseMatrix, Vector,
     };
     use crate::{ResourceMeasurement, SparseDirectSolverKind};
 
@@ -1638,6 +1655,81 @@ mod tests {
             identity.diagnostics().ordering,
             CholeskyOrderingKind::Identity
         );
+    }
+
+    #[test]
+    fn identity_cholesky_solves_full_upper_and_lower_storage() {
+        fn precision(storage: Side) -> SparseMatrix {
+            let mut matrix = CooMatrix::new(3, 3);
+            for (row, col, value) in [
+                (0, 0, 4.0),
+                (1, 1, 3.0),
+                (2, 2, 2.0),
+                (0, 1, 1.0),
+                (1, 2, 1.0),
+            ] {
+                matrix.push(row, col, value);
+                if row != col && storage == Side::Lower {
+                    matrix.push(col, row, value);
+                }
+            }
+            if storage == Side::Lower {
+                let mut lower = CooMatrix::new(3, 3);
+                for (row, col, value) in matrix.triplet_iter() {
+                    if row >= col {
+                        lower.push(row, col, *value);
+                    }
+                }
+                return SparseMatrix::from(&lower);
+            }
+            if storage == Side::Upper {
+                return SparseMatrix::from(&matrix);
+            }
+            unreachable!()
+        }
+
+        let mut full = CooMatrix::new(3, 3);
+        for (row, col, value) in [
+            (0, 0, 4.0),
+            (1, 1, 3.0),
+            (2, 2, 2.0),
+            (0, 1, 1.0),
+            (1, 0, 1.0),
+            (1, 2, 1.0),
+            (2, 1, 1.0),
+        ] {
+            full.push(row, col, value);
+        }
+        let inputs = [
+            SparseMatrix::from(&full),
+            precision(Side::Upper),
+            precision(Side::Lower),
+        ];
+        let expected = Vector::from_vec(vec![0.5, -1.2, 0.7]);
+        let rhs = Vector::from_vec(vec![0.8, -2.4, 0.2]);
+
+        for input in inputs {
+            let factor = input
+                .cholesky_sqrt_lower_with_ordering(CholeskyOrdering::Identity)
+                .unwrap();
+            assert_eq!(
+                factor.diagnostics().ordering,
+                CholeskyOrderingKind::Identity
+            );
+            assert_eq!(factor.permutation(), Permutation::identity(3));
+            let solution = factor.solve(&rhs).unwrap();
+            assert!((solution - &expected).norm() <= 1.0e-12);
+
+            let mut lower = DenseMatrix::zeros(3, 3);
+            for (row, col, value) in factor.lower_triplets() {
+                lower[(row, col)] = value;
+            }
+            let reconstructed = &lower * lower.transpose();
+            let reference = DenseMatrix::from_fn(3, 3, |row, col| {
+                [[4.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 2.0]][row][col]
+            });
+            assert!((reconstructed - reference).norm_l2() <= 1.0e-12);
+        }
     }
 
     #[test]
