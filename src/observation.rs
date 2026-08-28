@@ -3,10 +3,14 @@
 //! Conditioning forms `H^T R^-1 H` and `H^T R^-1 (y - b)` for one or more
 //! observation terms.
 
-use crate::types::{CooMatrix, GmrfError, SparseCholeskyFactor, SparseMatrix, Vector};
+use crate::resource::SparseDirectResourceReport;
+use crate::types::{
+    CholeskyOrdering, CooMatrix, GmrfError, SparseCholeskyFactor, SparseMatrix, Vector,
+};
 use faer::get_global_parallelism;
 use faer::sparse::linalg::matmul::sparse_sparse_matmul;
 use faer::sparse::ops::binary_op;
+use std::time::Instant;
 
 /// Observation noise model for a linear Gaussian term.
 #[derive(Clone, Copy, Debug)]
@@ -441,6 +445,42 @@ pub fn condition_linear_gaussian_with_factor(
     })
 }
 
+/// Apply linear Gaussian terms, factor with the requested ordering, and report
+/// the update, symbolic-analysis, numeric-factorization, and initial-solve
+/// resources separately.
+///
+/// The report's `assembly` phase is the construction of
+/// `Q_prior + H^T R^-1 H` and its information vector. The initial posterior
+/// mean solve is included in `report.solve`; subsequent solves against the
+/// returned factor can be appended to the same report.
+pub fn condition_linear_gaussian_with_factor_and_resource_report(
+    prior_precision: &SparseMatrix,
+    terms: &[LinearObservationTerm<'_>],
+    ordering: CholeskyOrdering,
+) -> Result<(FactoredLinearGaussianPosterior, SparseDirectResourceReport), GmrfError> {
+    let assembly_start = Instant::now();
+    let (posterior_precision, information, stats) =
+        apply_linear_observation_terms_with_stats(prior_precision, terms);
+    let assembly_wall_time = assembly_start.elapsed();
+
+    let (posterior_factor, mut report) =
+        posterior_precision.cholesky_sqrt_lower_with_resource_report(ordering)?;
+    report.record_assembly(assembly_wall_time);
+    let mut posterior_mean = information.clone();
+    posterior_factor.solve_in_place_with_resource_report(&mut posterior_mean, &mut report)?;
+
+    Ok((
+        FactoredLinearGaussianPosterior {
+            posterior_precision,
+            information,
+            posterior_mean,
+            posterior_factor,
+            stats,
+        },
+        report,
+    ))
+}
+
 /// Apply Gaussian observation conditioning in one step.
 ///
 /// Observations follow `y = H x + b + noise`, where `b` is optional. Returns
@@ -621,5 +661,42 @@ mod tests {
             factored.stats.posterior_precision_nnz,
             factored.posterior_precision.nnz()
         );
+    }
+
+    #[test]
+    fn factored_conditioning_resource_report_covers_update_factor_and_solve() {
+        let mut prior_coo = CooMatrix::new(3, 3);
+        prior_coo.push(0, 0, 4.0);
+        prior_coo.push(1, 1, 5.0);
+        prior_coo.push(2, 2, 6.0);
+        let prior = SparseMatrix::from(&prior_coo);
+
+        let mut h_coo = CooMatrix::new(2, 3);
+        h_coo.push(0, 0, 1.0);
+        h_coo.push(1, 1, 0.5);
+        h_coo.push(1, 2, 0.5);
+        let h = SparseMatrix::from(&h_coo);
+        let y = Vector::from_vec(vec![1.0, -1.0]);
+        let terms = [LinearObservationTerm::scalar_variance(&h, &y, None, 0.25)];
+
+        let plain = condition_linear_gaussian_with_factor(&prior, &terms).unwrap();
+        let (reported, report) = condition_linear_gaussian_with_factor_and_resource_report(
+            &prior,
+            &terms,
+            CholeskyOrdering::Amd,
+        )
+        .unwrap();
+
+        assert_matrix_entries_close(&plain.posterior_precision, &reported.posterior_precision);
+        assert!((&plain.posterior_mean - &reported.posterior_mean).norm() <= 1e-12);
+        assert_eq!(report.dimension, 3);
+        assert_eq!(report.coefficient_nnz, reported.posterior_precision.nnz());
+        assert!(report.assembly.wall_time.measured().is_some());
+        assert!(report.analysis.wall_time.measured().is_some());
+        assert!(report.numeric_factorization.wall_time.measured().is_some());
+        assert!(report.factor_storage_nonzeros.measured().is_some());
+        assert_eq!(report.solve.calls, 1);
+        assert_eq!(report.solve.right_hand_sides, 1);
+        assert!(report.solve.wall_time.measured().is_some());
     }
 }

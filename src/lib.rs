@@ -35,11 +35,12 @@ pub use observation::{
     add_sparse, apply_gaussian_observations, apply_gaussian_observations_with_precision,
     apply_linear_observation_terms, apply_linear_observation_terms_with_stats,
     build_linear_observation_matrix, condition_linear_gaussian_with_factor,
-    ht_precision_weighted_h, ht_precision_weighted_observations, ht_weighted_h,
-    ht_weighted_observations, linear_observation_update, linear_observation_update_with_stats,
-    multiply_sparse, observation_selector, FactoredLinearGaussianPosterior,
-    LinearObservationConditioningStats, LinearObservationNoise, LinearObservationStackBuilder,
-    LinearObservationTerm, LinearObservationUpdateStats, StackedObservationSystem,
+    condition_linear_gaussian_with_factor_and_resource_report, ht_precision_weighted_h,
+    ht_precision_weighted_observations, ht_weighted_h, ht_weighted_observations,
+    linear_observation_update, linear_observation_update_with_stats, multiply_sparse,
+    observation_selector, FactoredLinearGaussianPosterior, LinearObservationConditioningStats,
+    LinearObservationNoise, LinearObservationStackBuilder, LinearObservationTerm,
+    LinearObservationUpdateStats, StackedObservationSystem,
 };
 pub use precision::{PrecisionOperator, PrecisionStorage};
 pub use resource::{
