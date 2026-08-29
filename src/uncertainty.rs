@@ -593,10 +593,26 @@ pub fn exact_weighted_covariance_trace(
     factor: &SparseCholeskyFactor,
     weight: &SparseMatrix,
 ) -> Result<WeightedTraceEstimate, GmrfError> {
-    let dimension = factor.dimension();
-    if weight.nrows() != dimension || weight.ncols() != dimension {
+    if weight.nrows() != factor.dimension() || weight.ncols() != factor.dimension() {
         return Err(GmrfError::DimensionMismatch(
             "weighted trace matrix dimensions must match factor dimension",
+        ));
+    }
+    exact_weighted_covariance_trace_with_solve(weight, |rhs| factor.solve(rhs))
+}
+
+/// Exact `tr(W Cov)` with a caller-supplied covariance action.
+pub fn exact_weighted_covariance_trace_with_solve<F>(
+    weight: &SparseMatrix,
+    mut solve_covariance_action: F,
+) -> Result<WeightedTraceEstimate, GmrfError>
+where
+    F: FnMut(&Vector) -> Result<Vector, GmrfError>,
+{
+    let dimension = weight.nrows();
+    if weight.ncols() != dimension {
+        return Err(GmrfError::DimensionMismatch(
+            "weighted trace matrix must be square",
         ));
     }
 
@@ -616,7 +632,12 @@ pub fn exact_weighted_covariance_trace(
     for (col, entries) in entries_by_col {
         let mut rhs = Vector::zeros(dimension);
         rhs[col] = 1.0;
-        let solved = factor.solve(&rhs)?;
+        let solved = solve_covariance_action(&rhs)?;
+        if solved.len() != dimension {
+            return Err(GmrfError::DimensionMismatch(
+                "weighted trace covariance action returned the wrong dimension",
+            ));
+        }
         for (row, value) in entries {
             trace += value * solved[row];
         }
@@ -632,10 +653,31 @@ pub fn estimate_hutchinson_weighted_covariance_trace(
     config: ProbeBatchConfig,
     distribution: ProbeDistribution,
 ) -> Result<WeightedTraceEstimate, GmrfError> {
-    let dimension = factor.dimension();
-    if weight.nrows() != dimension || weight.ncols() != dimension {
+    if weight.nrows() != factor.dimension() || weight.ncols() != factor.dimension() {
         return Err(GmrfError::DimensionMismatch(
             "weighted trace matrix dimensions must match factor dimension",
+        ));
+    }
+    estimate_hutchinson_weighted_covariance_trace_with_solve(weight, config, distribution, |rhs| {
+        factor.solve(rhs)
+    })
+}
+
+/// Deterministic batched Hutchinson estimate of `tr(W Cov)` with a
+/// caller-supplied covariance action.
+pub fn estimate_hutchinson_weighted_covariance_trace_with_solve<F>(
+    weight: &SparseMatrix,
+    config: ProbeBatchConfig,
+    distribution: ProbeDistribution,
+    mut solve_covariance_action: F,
+) -> Result<WeightedTraceEstimate, GmrfError>
+where
+    F: FnMut(&Vector) -> Result<Vector, GmrfError>,
+{
+    let dimension = weight.nrows();
+    if weight.ncols() != dimension {
+        return Err(GmrfError::DimensionMismatch(
+            "weighted trace matrix must be square",
         ));
     }
     if weight
@@ -655,7 +697,12 @@ pub fn estimate_hutchinson_weighted_covariance_trace(
         let mut estimate = 0.0;
         for _ in 0..batch_size {
             let probe = draw_probe(dimension, distribution, &mut rng);
-            let solved = factor.solve(&probe)?;
+            let solved = solve_covariance_action(&probe)?;
+            if solved.len() != dimension {
+                return Err(GmrfError::DimensionMismatch(
+                    "weighted trace covariance action returned the wrong dimension",
+                ));
+            }
             let weighted_solved = weight.mul_vec(&solved);
             estimate += probe.dot(&weighted_solved);
         }
@@ -2648,6 +2695,25 @@ mod tests {
         assert_eq!(estimate.estimator, VarianceEstimator::Hutchinson);
         assert_eq!(estimate.batch_sizes, vec![2, 2]);
         assert!((estimate.value - 10.0).abs() < 1e-12);
+
+        let custom = estimate_hutchinson_weighted_covariance_trace_with_solve(
+            &weight,
+            ProbeBatchConfig {
+                num_probes: 4,
+                batch_count: 2,
+                rng_seed: 11,
+            },
+            ProbeDistribution::Rademacher,
+            |rhs| Ok(rhs.clone()),
+        )
+        .unwrap();
+        assert_eq!(custom.estimator, estimate.estimator);
+        assert_eq!(custom.batch_sizes, estimate.batch_sizes);
+        assert!((custom.value - estimate.value).abs() < 1e-12);
+
+        let exact_custom =
+            exact_weighted_covariance_trace_with_solve(&weight, |rhs| Ok(rhs.clone())).unwrap();
+        assert!((exact_custom.value - 10.0).abs() < 1e-12);
     }
 
     #[test]
