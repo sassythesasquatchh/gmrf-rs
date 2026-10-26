@@ -1,6 +1,7 @@
 use gmrf_core::{
     condition_linear_gaussian_with_factor, types::CooMatrix, DenseMatrix, GmrfError,
-    LinearObservationTerm, PreparedExactObservationPosterior, SparseMatrix, Vector,
+    LinearObservationTerm, PreparedExactObservationDiagonalPosterior,
+    PreparedExactObservationPosterior, SparseMatrix, Vector,
 };
 
 const COMPARISON_TOLERANCE: f64 = 2.0e-12;
@@ -107,6 +108,61 @@ fn covariance_block_conditioner_matches_direct_dense_formula_and_reuses_factor()
 }
 
 #[test]
+fn diagonal_conditioner_matches_full_output_diagonal_mean_and_action() {
+    let kyy = DenseMatrix::from_fn(2, 2, |row, column| [[2.0, 0.3], [0.3, 1.5]][row][column]);
+    let kgy = DenseMatrix::from_fn(2, 2, |row, column| [[0.5, -0.2], [1.0, 0.4]][row][column]);
+    let kgg = DenseMatrix::from_fn(2, 2, |row, column| [[1.2, 0.1], [0.1, 2.0]][row][column]);
+    let noise = DenseMatrix::from_fn(2, 2, |row, column| {
+        [[0.25, 0.04], [0.04, 0.35]][row][column]
+    });
+    let full =
+        PreparedExactObservationPosterior::from_prior_covariance_blocks_with_noise_covariance(
+            &kyy, &kgy, &kgg, &noise,
+        )
+        .unwrap();
+    let prior_variances = Vector::from_vec(vec![kgg[(0, 0)], kgg[(1, 1)]]);
+    let diagonal =
+        PreparedExactObservationDiagonalPosterior::from_prior_covariance_blocks_with_noise_covariance(
+            &kyy,
+            &kgy,
+            &prior_variances,
+            &noise,
+        )
+        .unwrap();
+    let observations = Vector::from_vec(vec![0.8, -0.2]);
+    assert_vector_close(
+        &diagonal.output_mean(&observations).unwrap(),
+        full.output_mean(&observations).unwrap().as_slice(),
+    );
+    for index in 0..2 {
+        assert!((diagonal.prior_output_variances()[index] - kgg[(index, index)]).abs() < 1.0e-14);
+        assert!(
+            (diagonal.posterior_output_variances()[index]
+                - full.posterior_output_covariance()[(index, index)])
+                .abs()
+                < COMPARISON_TOLERANCE
+        );
+    }
+    let input = Vector::from_vec(vec![0.7, -0.2]);
+    let prior_action = Vector::from_fn(2, |row| {
+        (0..2)
+            .map(|column| kgg[(row, column)] * input[column])
+            .sum::<f64>()
+    });
+    assert_vector_close(
+        &diagonal
+            .posterior_output_covariance_action_from_prior_action(&input, &prior_action)
+            .unwrap(),
+        full.posterior_output_covariance_action(&input)
+            .unwrap()
+            .as_slice(),
+    );
+    let diagnostics = diagonal.diagnostics();
+    assert_eq!(diagnostics.persistent_f64_entries, 12);
+    assert_eq!(diagnostics.posterior_output_variance_entries, 2);
+}
+
+#[test]
 fn exact_observation_conditioner_matches_sparse_precision_conditioning() {
     let precision_dense = [[2.0, -0.5, 0.0], [-0.5, 1.5, -0.25], [0.0, -0.25, 1.25]];
     let prior_precision = sparse_from_dense(&precision_dense);
@@ -210,6 +266,57 @@ fn scalar_noise_and_already_noisy_constructors_are_equivalent() {
         explicit.posterior_output_covariance(),
         already_noisy.posterior_output_covariance(),
     );
+}
+
+#[test]
+fn correlated_noise_covariance_matches_precision_weighted_sparse_conditioning() {
+    let prior_precision = sparse_from_dense(&[[2.0, -0.4], [-0.4, 1.5]]);
+    let prior_factor = prior_precision.cholesky_sqrt_lower().unwrap();
+    let prior_covariance = DenseMatrix::from_fn(2, 2, |row, column| {
+        let rhs = Vector::from_fn(2, |index| f64::from(index == column));
+        prior_factor.solve(&rhs).unwrap()[row]
+    });
+    let h_dense = [[1.0, 0.25], [-0.5, 1.0]];
+    let h = sparse_from_dense(&h_dense);
+    let kyy = symmetric_projection(&covariance_pushforward(
+        &h_dense,
+        &prior_covariance,
+        &h_dense,
+    ));
+    let kgy = covariance_pushforward(&[[1.0, 0.0], [0.0, 1.0]], &prior_covariance, &h_dense);
+    let kgg = symmetric_projection(&prior_covariance);
+    let noise_covariance =
+        DenseMatrix::from_fn(2, 2, |row, column| [[0.3, 0.1], [0.1, 0.2]][row][column]);
+    let prepared =
+        PreparedExactObservationPosterior::from_prior_covariance_blocks_with_noise_covariance(
+            &kyy,
+            &kgy,
+            &kgg,
+            &noise_covariance,
+        )
+        .unwrap();
+
+    let noise_precision = sparse_from_dense(&[[4.0, -2.0], [-2.0, 6.0]]);
+    let observations = Vector::from_vec(vec![0.7, -0.3]);
+    let sparse = condition_linear_gaussian_with_factor(
+        &prior_precision,
+        &[LinearObservationTerm::precision(
+            &h,
+            &observations,
+            None,
+            &noise_precision,
+        )],
+    )
+    .unwrap();
+    assert_vector_close(
+        &prepared.output_mean(&observations).unwrap(),
+        sparse.posterior_mean.as_slice(),
+    );
+    let expected_covariance = DenseMatrix::from_fn(2, 2, |row, column| {
+        let rhs = Vector::from_fn(2, |index| f64::from(index == column));
+        sparse.posterior_factor.solve(&rhs).unwrap()[row]
+    });
+    assert_matrix_close(prepared.posterior_output_covariance(), &expected_covariance);
 }
 
 #[test]

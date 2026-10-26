@@ -25,7 +25,8 @@ pub use diagnostics::{
     covariance_to_correlation, gaussian_predictive_diagnostics, GaussianPredictiveDiagnostics,
 };
 pub use exact_observation::{
-    ExactObservationPosteriorDiagnostics, PreparedExactObservationPosterior,
+    ExactObservationDiagonalPosteriorDiagnostics, ExactObservationPosteriorDiagnostics,
+    PreparedExactObservationDiagonalPosterior, PreparedExactObservationPosterior,
 };
 pub use gmrf::{
     constrained_dense_covariance, ConstrainedVarianceDecomposition, Gmrf,

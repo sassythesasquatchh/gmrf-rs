@@ -41,6 +41,192 @@ pub struct ExactObservationPosteriorDiagnostics {
     pub posterior_output_covariance_max_abs_skew: f64,
 }
 
+/// Persistent dimensions and storage for diagonal-only exact conditioning.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExactObservationDiagonalPosteriorDiagnostics {
+    pub observation_count: usize,
+    pub output_count: usize,
+    pub dense_factor_allocated_entries: usize,
+    pub output_observation_covariance_entries: usize,
+    pub prior_output_variance_entries: usize,
+    pub posterior_output_variance_entries: usize,
+    pub persistent_f64_entries: usize,
+}
+
+/// Exact observation-space posterior retaining only all output marginal
+/// variances rather than a dense output covariance.
+#[derive(Debug, Clone)]
+pub struct PreparedExactObservationDiagonalPosterior {
+    factor: Llt<f64>,
+    output_observation_covariance: DenseMatrix,
+    prior_output_variances: Vector,
+    posterior_output_variances: Vector,
+}
+
+impl PreparedExactObservationDiagonalPosterior {
+    /// Prepare a diagonal-only posterior with an explicit noise covariance.
+    pub fn from_prior_covariance_blocks_with_noise_covariance(
+        prior_observation_covariance: &DenseMatrix,
+        output_observation_covariance: &DenseMatrix,
+        prior_output_variances: &Vector,
+        noise_covariance: &DenseMatrix,
+    ) -> Result<Self, GmrfError> {
+        validate_diagonal_blocks(
+            prior_observation_covariance,
+            output_observation_covariance,
+            prior_output_variances,
+        )?;
+        validate_symmetric_finite_covariance(noise_covariance, "R")?;
+        if noise_covariance.nrows() != prior_observation_covariance.nrows() {
+            return Err(GmrfError::DimensionMismatch(
+                "observation-noise covariance must match Kyy",
+            ));
+        }
+        let noisy_observation_covariance = DenseMatrix::from_fn(
+            prior_observation_covariance.nrows(),
+            prior_observation_covariance.ncols(),
+            |row, column| {
+                prior_observation_covariance[(row, column)] + noise_covariance[(row, column)]
+            },
+        );
+        Self::from_noisy_covariance_blocks(
+            &noisy_observation_covariance,
+            output_observation_covariance,
+            prior_output_variances,
+        )
+    }
+
+    /// Prepare from `Kyy + R`, `Kgy`, and `diag(Kgg)`.
+    pub fn from_noisy_covariance_blocks(
+        noisy_observation_covariance: &DenseMatrix,
+        output_observation_covariance: &DenseMatrix,
+        prior_output_variances: &Vector,
+    ) -> Result<Self, GmrfError> {
+        validate_diagonal_blocks(
+            noisy_observation_covariance,
+            output_observation_covariance,
+            prior_output_variances,
+        )?;
+        let factor = noisy_observation_covariance
+            .clone()
+            .llt(Side::Lower)
+            .map_err(|_| GmrfError::NonPositiveDefinite)?;
+        let observation_count = noisy_observation_covariance.nrows();
+        let output_count = output_observation_covariance.nrows();
+        let mut solved_cross_covariance =
+            DenseMatrix::from_fn(observation_count, output_count, |row, column| {
+                output_observation_covariance[(column, row)]
+            });
+        factor.solve_in_place(solved_cross_covariance.as_mut());
+        let posterior_output_variances = Vector::from_fn(output_count, |output| {
+            prior_output_variances[output]
+                - (0..observation_count)
+                    .map(|observation| {
+                        output_observation_covariance[(output, observation)]
+                            * solved_cross_covariance[(observation, output)]
+                    })
+                    .sum::<f64>()
+        });
+        Ok(Self {
+            factor,
+            output_observation_covariance: output_observation_covariance.clone(),
+            prior_output_variances: prior_output_variances.clone(),
+            posterior_output_variances,
+        })
+    }
+
+    pub fn observation_count(&self) -> usize {
+        self.output_observation_covariance.ncols()
+    }
+
+    pub fn output_count(&self) -> usize {
+        self.output_observation_covariance.nrows()
+    }
+
+    pub fn prior_output_variances(&self) -> &Vector {
+        &self.prior_output_variances
+    }
+
+    pub fn posterior_output_variances(&self) -> &Vector {
+        &self.posterior_output_variances
+    }
+
+    /// Posterior output mean for replacement observations and a zero prior mean.
+    pub fn output_mean(&self, observations: &Vector) -> Result<Vector, GmrfError> {
+        if observations.len() != self.observation_count() {
+            return Err(GmrfError::DimensionMismatch(
+                "observation values must match Kyy",
+            ));
+        }
+        validate_finite_vector(observations, "observation values")?;
+        let mut solved =
+            DenseMatrix::from_fn(self.observation_count(), 1, |row, _| observations[row]);
+        self.factor.solve_in_place(solved.as_mut());
+        let mut mean = DenseMatrix::zeros(self.output_count(), 1);
+        matmul(
+            &mut mean,
+            Accum::Replace,
+            self.output_observation_covariance.as_ref(),
+            solved.as_ref(),
+            1.0,
+            Par::Seq,
+        );
+        Ok(Vector::from_fn(self.output_count(), |row| mean[(row, 0)]))
+    }
+
+    /// Apply the posterior covariance when the caller supplies the prior
+    /// output covariance action. This avoids storing `Kgg` while retaining the
+    /// exact low-rank observation correction.
+    pub fn posterior_output_covariance_action_from_prior_action(
+        &self,
+        input: &Vector,
+        prior_action: &Vector,
+    ) -> Result<Vector, GmrfError> {
+        if input.len() != self.output_count() || prior_action.len() != self.output_count() {
+            return Err(GmrfError::DimensionMismatch(
+                "output covariance input and prior action must match output count",
+            ));
+        }
+        validate_finite_vector(input, "output covariance input")?;
+        validate_finite_vector(prior_action, "prior output covariance action")?;
+        let mut projected = DenseMatrix::from_fn(self.observation_count(), 1, |observation, _| {
+            (0..self.output_count())
+                .map(|output| {
+                    self.output_observation_covariance[(output, observation)] * input[output]
+                })
+                .sum::<f64>()
+        });
+        self.factor.solve_in_place(projected.as_mut());
+        Ok(Vector::from_fn(self.output_count(), |output| {
+            prior_action[output]
+                - (0..self.observation_count())
+                    .map(|observation| {
+                        self.output_observation_covariance[(output, observation)]
+                            * projected[(observation, 0)]
+                    })
+                    .sum::<f64>()
+        }))
+    }
+
+    pub fn diagnostics(&self) -> ExactObservationDiagonalPosteriorDiagnostics {
+        let observation_count = self.observation_count();
+        let output_count = self.output_count();
+        let dense_factor_allocated_entries = observation_count * observation_count;
+        let output_observation_covariance_entries = output_count * observation_count;
+        ExactObservationDiagonalPosteriorDiagnostics {
+            observation_count,
+            output_count,
+            dense_factor_allocated_entries,
+            output_observation_covariance_entries,
+            prior_output_variance_entries: output_count,
+            posterior_output_variance_entries: output_count,
+            persistent_f64_entries: dense_factor_allocated_entries
+                + output_observation_covariance_entries
+                + 2 * output_count,
+        }
+    }
+}
+
 /// Exact Gaussian posterior prepared from observation/output covariance blocks.
 ///
 /// The object stores the dense factor of `Kyy + R`, `Kgy`, and the already
@@ -80,6 +266,41 @@ impl PreparedExactObservationPosterior {
             noisy_observation_covariance[(index, index)] += noise_variance;
         }
 
+        Self::from_noisy_covariance_blocks(
+            &noisy_observation_covariance,
+            output_observation_covariance,
+            prior_output_covariance,
+        )
+    }
+
+    /// Prepare an exact posterior with an explicit observation-noise covariance.
+    ///
+    /// This forms and factors `Kyy + R`. The noise covariance must be finite,
+    /// exactly symmetric, and have the same dimension as `Kyy`.
+    pub fn from_prior_covariance_blocks_with_noise_covariance(
+        prior_observation_covariance: &DenseMatrix,
+        output_observation_covariance: &DenseMatrix,
+        prior_output_covariance: &DenseMatrix,
+        noise_covariance: &DenseMatrix,
+    ) -> Result<Self, GmrfError> {
+        validate_covariance_blocks(
+            prior_observation_covariance,
+            output_observation_covariance,
+            prior_output_covariance,
+        )?;
+        validate_symmetric_finite_covariance(noise_covariance, "R")?;
+        if noise_covariance.nrows() != prior_observation_covariance.nrows() {
+            return Err(GmrfError::DimensionMismatch(
+                "observation-noise covariance must match Kyy",
+            ));
+        }
+        let noisy_observation_covariance = DenseMatrix::from_fn(
+            prior_observation_covariance.nrows(),
+            prior_observation_covariance.ncols(),
+            |row, column| {
+                prior_observation_covariance[(row, column)] + noise_covariance[(row, column)]
+            },
+        );
         Self::from_noisy_covariance_blocks(
             &noisy_observation_covariance,
             output_observation_covariance,
@@ -280,6 +501,34 @@ fn validate_covariance_blocks(
         ));
     }
     validate_finite_matrix(output_observation_covariance, "Kgy")
+}
+
+fn validate_diagonal_blocks(
+    observation_covariance: &DenseMatrix,
+    output_observation_covariance: &DenseMatrix,
+    output_variances: &Vector,
+) -> Result<(), GmrfError> {
+    validate_symmetric_finite_covariance(observation_covariance, "Kyy")?;
+    if observation_covariance.nrows() == 0 || output_variances.is_empty() {
+        return Err(GmrfError::DimensionMismatch(
+            "diagonal exact conditioner requires observations and outputs",
+        ));
+    }
+    if output_observation_covariance.ncols() != observation_covariance.nrows()
+        || output_observation_covariance.nrows() != output_variances.len()
+    {
+        return Err(GmrfError::DimensionMismatch(
+            "Kgy and output-variance dimensions do not align",
+        ));
+    }
+    validate_finite_matrix(output_observation_covariance, "Kgy")?;
+    validate_finite_vector(output_variances, "diag(Kgg)")?;
+    if output_variances.iter().any(|value| *value < 0.0) {
+        return Err(GmrfError::DimensionMismatch(
+            "prior output variances must be non-negative",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_symmetric_finite_covariance(
